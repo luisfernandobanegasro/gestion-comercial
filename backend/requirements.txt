@@ -1,0 +1,14 @@
+Django==5.0.6
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.3.1
+django-filter==24.3
+psycopg2-binary==2.9.9
+drf-spectacular==0.27.2
+python-dotenv==1.0.1
+reportlab==4.2.2
+openpyxl==3.1.5
+Pillow==10.4.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+joblib==1.4.2

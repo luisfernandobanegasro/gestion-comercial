@@ -1,0 +1,32 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.sqlite3
+db.sqlite3
+/media/
+staticfiles/
+collectstatic/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+*/.venv/
+*/venv/
+*/env/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+
+# Config / secretos
+.env
+*.env
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
