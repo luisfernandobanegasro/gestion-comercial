@@ -1,0 +1,145 @@
+
+:root{
+  --bg:#0b1220; --card:#0f172a; --muted:#94a3b8; --brand:#0ea5e9;
+  --surface: var(--card); --border:#1e293b; --text:#e2e8f0;
+  --primary: var(--brand); --primary-ink:#001019;
+}
+.theme-light{
+  --bg:#f8fafc; --surface:#ffffff; --card:#ffffff; --border:#e5e7eb;
+  --text:#0f172a; --muted:#475569; --primary:#0ea5e9; --primary-ink:#001019;
+}
+*{ box-sizing:border-box } html, body{ height:100% }
+body{ margin:0; font-family:system-ui, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--text) }
+a{ color:inherit; text-decoration:none }
+.container{ max-width:1200px; margin:0 auto; padding:16px }
+.card{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px }
+input, select, button, textarea{ background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; outline:none }
+button{ cursor:pointer } button.primary{ background:var(--primary); border-color:var(--primary); color:var(--primary-ink) }
+input:focus, select:focus, textarea:focus{ box-shadow:0 0 0 3px color-mix(in srgb, var(--primary) 35%, transparent); border-color:var(--primary) }
+table{ width:100%; border-collapse:collapse } th, td{ padding:10px; border-bottom:1px solid var(--border); text-align:left } th{ color:var(--muted); font-weight:600 }
+.grid{ display:grid; gap:16px } .grid-2{ grid-template-columns:1fr 1fr } .grid-3{ grid-template-columns:repeat(3, 1fr) }
+.table-responsive{ overflow:auto; width:100% }
+
+.app{ display:grid; grid-template-columns: 260px 1fr; min-height:100vh }
+.sidebar{ position:sticky; top:0; height:100vh; background:var(--surface); border-right:1px solid var(--border); z-index:6 }
+.side-header{ display:flex; align-items:center; gap:8px; padding:14px 12px; font-weight:800 }
+.brand-dot{ width:10px; height:10px; border-radius:9999px; background:var(--primary) }
+.nav-group-title{ color:var(--muted); font-size:12px; padding:8px 12px }
+.nav-link{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; margin:3px 8px; color:#cbd5e1 }
+.nav-link:hover{ background:var(--border) } .nav-link.active{ background:var(--border); color:var(--text) }
+.hide-when-collapsed{ transition:opacity .15s }
+.header{ position:sticky; top:0; background:var(--surface); border-bottom:1px solid var(--border); padding:10px 14px; display:flex; align-items:center; gap:8px; z-index:5 }
+.hamb{ width:36px; height:36px; border-radius:10px; background:transparent; border:1px solid var(--border); color:var(--text) }
+.spacer{ flex:1 }
+.tabs{ display:flex; gap:8px; flex-wrap:wrap } .tab{ background:transparent; border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:999px } .tab:hover{ background:var(--border) } .tab.active{ background:var(--primary); border-color:var(--primary); color:var(--primary-ink) }
+.app.collapsed { grid-template-columns: 72px 1fr } .app.collapsed .sidebar { width:72px } .app.collapsed .hide-when-collapsed { display:none }
+.toast{ position:fixed; right:16px; bottom:16px; background:var(--primary); color:var(--primary-ink); padding:10px 14px; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,.35); opacity:0; transform:translateY(10px); animation:toast-in .2s forwards }
+@keyframes toast-in{ to{ opacity:1; transform:translateY(0) } }
+@media (max-width:1100px){ .grid-3{ grid-template-columns:1fr 1fr } }
+@media (max-width:900px){
+  .grid-2, .grid-3{ grid-template-columns:1fr }
+  .app{ grid-template-columns: 0 1fr }
+  .sidebar{ transform: translateX(-100%); position:fixed; left:0; width:260px; transition: transform .2s ease-in-out; }
+  .app.show-side .sidebar{ transform: translateX(0) }
+}
+
+/* —— Ajustes generales responsive —— */
+.container{ max-width:1200px; margin:0 auto; padding:16px }
+@media (max-width: 900px){
+  .container{ max-width:100%; padding:12px }       /* más aire en móvil */
+  .grid-2, .grid-3{ grid-template-columns:1fr }    /* columnas → 1 */
+}
+
+/* —— Sidebar desktop —— */
+.app{ display:grid; grid-template-columns: 260px 1fr; min-height:100vh }
+.sidebar{
+  position:sticky; top:0; height:100vh; width:260px;
+  background:var(--surface); border-right:1px solid var(--border); z-index:60;
+  will-change: transform;
+}
+.app.collapsed { grid-template-columns: 72px 1fr }
+.app.collapsed .sidebar { width:72px }
+.app.collapsed .hide-when-collapsed { display:none }
+
+/* —— Header —— */
+.header{ position:sticky; top:0; background:var(--surface); border-bottom:1px solid var(--border);
+  padding:10px 14px; display:flex; align-items:center; gap:8px; z-index:70 }
+.hamb{ width:36px; height:36px; border-radius:10px; background:transparent; border:1px solid var(--border); color:var(--text) }
+
+/* —— Overlay para móvil —— */
+.mobile-backdrop{
+  display:none;
+}
+@media (max-width: 900px){
+  /* el grid no reserva espacio para el sidebar en móvil */
+  .app{ grid-template-columns: 1fr }
+  .sidebar{
+    position:fixed; inset:0 auto 0 0; height:100vh;       /* pegado al borde izq */
+    transform: translateX(-102%);
+    transition: transform .25s ease;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .app.show-side .sidebar{ transform: translateX(0) }
+
+  /* overlay detrás del sidebar */
+  .mobile-backdrop{
+    display:block;
+    position:fixed; inset:0;
+    background: rgba(2,6,23,.55);
+    opacity:0; pointer-events:none;
+    transition: opacity .25s ease;
+    z-index:55;
+  }
+  .app.show-side .mobile-backdrop{
+    opacity:1; pointer-events:auto;
+  }
+
+  /* al abrir el menú, bloqueamos el scroll del contenido */
+  body.menu-open{ overflow:hidden }
+}
+
+/* ——— Layout del header: que no se corte en móvil ——— */
+.header{ flex-wrap: wrap; gap:10px }
+.header .spacer{ flex: 1 1 auto }
+
+/* ——— Contenedores de acciones que auto-saltan de línea ——— */
+.btn-row{ display:flex; flex-wrap:wrap; gap:8px }
+.btn-row > *{ flex: 0 0 auto }
+
+/* ——— Grids de tarjetas auto-fit para catálogos/listados ——— */
+.cards{ display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.card-item{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:10px }
+.card-item img{ width:100%; height:140px; object-fit:cover; border-radius:10px; background:#0b1220 }
+
+/* ——— Formularios en filas que colapsan ——— */
+.form-row{ display:grid; gap:12px; grid-template-columns: 1fr 1fr }
+@media (max-width:900px){ .form-row{ grid-template-columns:1fr } }
+
+/* ——— Tablas: nowrap opcional + ya tienes .table-responsive ——— */
+.table-nowrap td, .table-nowrap th{ white-space:nowrap }
+/* Input con icono (ojo) */
+.input-group{ position:relative }
+.input-group > input{ width:100%; padding-right:42px }
+.icon-btn{
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  width:34px; height:34px; display:grid; place-items:center;
+  background:transparent; border:1px solid var(--border); border-radius:8px; color:var(--text);
+}
+.icon-btn:hover{ background:var(--border) }
+
+/* Links debajo del login/registro */
+.auth-links{
+  display:flex; justify-content:space-between; gap:12px; margin-top:6px;
+  font-size:14px; color:var(--muted);
+}
+.auth-links a{ color:inherit }
+.auth-links a:hover{ text-decoration:underline }
+
+/* En tu archivo CSS principal (ej: index.css o App.css) */
+.main-content {
+  transition: margin-left 0.3s ease;
+}
+
+body.sidebar-collapsed .main-content {
+  margin-left: 60px; /* O el ancho de tu sidebar colapsado */
+}

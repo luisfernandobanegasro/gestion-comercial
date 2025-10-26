@@ -1,0 +1,135 @@
+@base = http://127.0.0.1:8000
+@token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYxMjA3NzU0LCJpYXQiOjE3NjEyMDU5NTQsImp0aSI6ImYzOTEzNDg0N2Q0NDRkNjk5YjgzODBhYmQ0ZTNiODRmIiwidXNlcl9pZCI6Mn0.Nn4FLNHAWVviKdN766qBLtC2P-qQlmF2hz6eHftWzsM
+
+### =========================================
+### 🔐 LOGIN (copias el access de aquí)
+### =========================================
+POST {{base}}/api/cuentas/token/
+Content-Type: application/json
+
+{
+  "username": "ferb",
+  "password": "ferb"
+}
+
+### =========================================
+### 👤 Ver perfil actual
+### =========================================
+GET {{base}}/api/cuentas/yo/
+Authorization: Bearer {{token}}
+
+### =========================================
+### 🧾 Reporte en pantalla (JSON)
+### =========================================
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por cliente, en pantalla."
+}
+
+### =========================================
+### 📄 Reporte en PDF
+### =========================================
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/pdf
+
+{
+  "prompt": "Generar reporte de ventas del mes de septiembre por producto en PDF."
+}
+
+### =========================================
+### 📊 Reporte en Excel
+### =========================================
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+{
+  "prompt": "Generar reporte de ventas del 2025-10-01 al 2025-10-23 por total en Excel."
+}
+
+### =========================================
+### 🛒 Crear venta (ejemplo)
+### =========================================
+POST {{base}}/api/ventas/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "cliente": 1,
+  "observacion": "Pedido desde REST Client",
+  "items": [
+    { "producto": 1, "cantidad": 2, "precio_unit": 50.0 },
+    { "producto": 2, "cantidad": 1, "precio_unit": 30.0 }
+  ]
+}
+
+### =========================================
+### 💳 Confirmar pago simulado
+### =========================================
+POST {{base}}/api/pagos/confirmar/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "venta_id": 1,
+  "aprobado": true
+}
+
+
+
+POST {{base}}/api/ventas/
+{
+  "cliente": 1,
+  "observacion": "Pedido de prueba",
+  "items": [
+    { "producto": 1, "cantidad": 2 },
+    { "producto": 2, "cantidad": 1 }
+  ]
+}
+
+
+### Reporte pantalla (JSON)
+POST http://127.0.0.1:8000/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por cliente, en pantalla."
+}
+
+### Pantalla (JSON)
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por cliente, en pantalla."
+}
+
+### PDF
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/pdf
+
+{
+  "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por producto, en PDF."
+}
+
+### Excel
+POST {{base}}/api/reportes/prompt/
+Authorization: Bearer {{token}}
+Content-Type: application/json
+Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+{
+  "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por categoría, en Excel."
+}

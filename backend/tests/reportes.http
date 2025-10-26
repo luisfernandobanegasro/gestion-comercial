@@ -1,0 +1,8 @@
+# ### Generar reporte (JSON en pantalla)
+# POST http://127.0.0.1:8000/api/reportes/prompt/
+# Authorization: Bearer {{token}}
+# Content-Type: application/json
+
+# {
+#   "prompt": "Quiero un reporte de ventas del 01/10/2024 al 01/01/2025, agrupado por cliente, en pantalla."
+# }

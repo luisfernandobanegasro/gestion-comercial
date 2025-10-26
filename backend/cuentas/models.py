@@ -29,3 +29,17 @@ class Usuario(AbstractUser):
         # True si cualquier rol del usuario contiene el permiso "codigo"
         return self.roles.filter(permisos__codigo=codigo).exists()
 
+    def get_all_permissions(self, obj=None):
+        """
+        Devuelve un set de strings con los códigos de permiso que tiene el usuario
+        a través de sus roles. Sobrescribe el método de Django para usar nuestro
+        sistema de roles personalizado.
+        """
+        if not self.is_active or self.is_anonymous:
+            return set()
+        if self.is_superuser:
+            # Un superusuario tiene todos los permisos de nuestro sistema.
+            return set(Permiso.objects.values_list('codigo', flat=True))
+
+        # Obtenemos todos los permisos de todos los roles del usuario.
+        return set(Permiso.objects.filter(roles__in=self.roles.all()).values_list('codigo', flat=True))

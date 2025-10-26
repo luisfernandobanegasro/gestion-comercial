@@ -1,75 +1,84 @@
+# core/settings.py
 from pathlib import Path
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
 
-# ============================================================
-# BASE DIRECTORY Y VARIABLES DE ENTORNO
-# ============================================================
+# ================================
+# BASE DIR + .env
+# ================================
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")  # Carga las variables del archivo .env
+load_dotenv(BASE_DIR / ".env")
 
-# ============================================================
-# CONFIGURACIONES BÁSICAS
-# ============================================================
+# Monorepo (backend/, frontend/)
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
+
+# ================================
+# CONFIG BÁSICA
+# ================================
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
 
-# ============================================================
-# APLICACIONES INSTALADAS
-# ============================================================
+# ================================
+# APPS
+# ================================
 INSTALLED_APPS = [
-    # Django base
+    # Proyecto (la app de cuentas primero)
+    "cuentas",
+
+    # Django
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
-    # Librerías de terceros
+    # 3rd party
     "rest_framework",
     "django_filters",
     "drf_spectacular",
-
-    # Aplicaciones del proyecto
-    "cuentas",
+    "corsheaders",  # <-- requiere `pip install django-cors-headers`
     "auditoria",
     "catalogo",
     "clientes",
     "ventas",
     "pagos",
     "reportes",
+    "configuracion", # <-- Añadir esta línea
     "analitica",
     "ia",
 ]
 
-# ============================================================
+# ================================
 # MIDDLEWARE
-# ============================================================
+# ================================
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+
+    # CORS SIEMPRE antes de CommonMiddleware
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
+
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 
-    # Auditoría personalizada
+    # Auditoría propia (si ya la tienes creada)
     "core.middleware.AuditoriaMiddleware",
 ]
 
 ROOT_URLCONF = "core.urls"
 
-# ============================================================
+# ================================
 # TEMPLATES
-# ============================================================
+# ================================
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [],  # p.ej. [FRONTEND_DIR / "dist"] si decides servir el build
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -84,9 +93,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# ============================================================
-# BASE DE DATOS (PostgreSQL)
-# ============================================================
+# ================================
+# DATABASE (PostgreSQL)
+# ================================
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -98,14 +107,14 @@ DATABASES = {
     }
 }
 
-# ============================================================
-# AUTENTICACIÓN Y USUARIO PERSONALIZADO
-# ============================================================
+# ================================
+# AUTH
+# ================================
 AUTH_USER_MODEL = "cuentas.Usuario"
 
-# ============================================================
-# CONFIGURACIÓN DE REST FRAMEWORK
-# ============================================================
+# ================================
+# DRF + JWT + OpenAPI
+# ================================
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -127,11 +136,13 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API del Sistema de Gestión Comercial con Django + PostgreSQL",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "SECURITY": [{"bearerAuth": []}],
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
-# ============================================================
-# VALIDADORES DE CONTRASEÑA
-# ============================================================
+# ================================
+# PASSWORD VALIDATORS
+# ================================
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -139,23 +150,60 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# ============================================================
-# INTERNACIONALIZACIÓN
-# ============================================================
+# ================================
+# I18N
+# ================================
 LANGUAGE_CODE = "es"
 TIME_ZONE = os.getenv("TIME_ZONE", "America/La_Paz")
 USE_I18N = True
 USE_TZ = True
 
-# ============================================================
-# ARCHIVOS ESTÁTICOS Y MEDIA
-# ============================================================
+# ================================
+# STATIC & MEDIA
+# ================================
 STATIC_URL = "static/"
 MEDIA_URL = "media/"
 STATIC_ROOT = BASE_DIR / "static"
 MEDIA_ROOT = BASE_DIR / "media"
 
-# ============================================================
-# CLAVE POR DEFECTO
-# ============================================================
+# Si en producción quieres servir el build de Vite desde Django:
+# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ================================
+# CORS / CSRF (monorepo con frontend)
+# ================================
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# ================================
+# EMAIL & LOGGING (útil dev)
+# ================================
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": "INFO"},
+}
+
+# ================================
+# STRIPE
+# ================================
+STRIPE_PUBLIC_KEY = os.getenv("STRIPE_PUBLIC_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")

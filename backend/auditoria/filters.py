@@ -3,13 +3,11 @@ from .models import RegistroAuditoria
 
 class RegistroAuditoriaFilter(df.FilterSet):
     # Rangos de fecha y datetime
-    fecha_min = df.DateFilter(field_name="fecha", lookup_expr="gte")
-    fecha_max = df.DateFilter(field_name="fecha", lookup_expr="lte")
-    creado_desde = df.IsoDateTimeFilter(field_name="creado_en", lookup_expr="gte")
-    creado_hasta = df.IsoDateTimeFilter(field_name="creado_en", lookup_expr="lte")
+    desde = df.IsoDateTimeFilter(field_name="creado_en", lookup_expr="gte")
+    hasta = df.IsoDateTimeFilter(field_name="creado_en", lookup_expr="lte")
 
     # Filtros exactos
-    usuario = df.NumberFilter(field_name="usuario_id", lookup_expr="exact")
+    usuario = df.CharFilter(field_name="usuario__username", lookup_expr="iexact")
     modulo = df.CharFilter(field_name="modulo", lookup_expr="iexact")
     metodo = df.CharFilter(field_name="metodo", lookup_expr="iexact")
     estado = df.NumberFilter(field_name="estado", lookup_expr="exact")

@@ -10,6 +10,13 @@ def _get_client_ip(request):
         return xff.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR")
 
+def _clean_payload(payload):
+    """Elimina campos sensibles de un payload antes de guardarlo."""
+    if not isinstance(payload, dict):
+        return payload
+    sensitive_keys = ['password', 'token', 'access_token', 'refresh_token', 'new_password']
+    return {k: "[REDACTED]" if k in sensitive_keys else v for k, v in payload.items()}
+
 class AuditoriaMiddleware(MiddlewareMixin):
     def process_response(self, request, response):
         try:
@@ -20,23 +27,31 @@ class AuditoriaMiddleware(MiddlewareMixin):
             if request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 try:
                     if request.body:
-                        payload = json.loads(request.body.decode("utf-8"))
+                        payload = _clean_payload(json.loads(request.body.decode("utf-8")))
                 except Exception:
                     payload = None  # nunca romper por payload malformado
 
             # Módulo/acción a partir de la ruta resuelta
             modulo = "web"
             accion = "request"
-            try:
-                if request.path.startswith("/api/"):
-                    partes = request.path.split("/")
-                    if len(partes) > 2 and partes[2]:
-                        modulo = partes[2]
-                if getattr(request, "resolver_match", None):
-                    # url_name o view_name de la ruta
-                    accion = request.resolver_match.url_name or request.resolver_match.view_name or accion
-            except Exception:
-                pass
+            resolver_match = getattr(request, "resolver_match", None)
+            if resolver_match:
+                # Módulo a partir del namespace de la URL
+                if resolver_match.namespace:
+                    modulo = resolver_match.namespace
+                
+                # Acción más descriptiva a partir de la vista
+                view = getattr(resolver_match.func, 'view_class', None)
+                if view:
+                    action_map = {
+                        'list': 'Listar', 'create': 'Crear',
+                        'retrieve': 'Ver Detalle', 'update': 'Actualizar',
+                        'partial_update': 'Actualizar Parcialmente', 'destroy': 'Eliminar'
+                    }
+                    view_action = getattr(view, 'action', 'request')
+                    action_name = action_map.get(view_action, view_action.replace('_', ' ').title())
+                    model_name = getattr(view.queryset.model, '_meta', {}).verbose_name or 'Recurso'
+                    accion = f"{action_name} {model_name}"
 
             RegistroAuditoria.objects.create(
                 usuario=user if getattr(user, "is_authenticated", False) else None,

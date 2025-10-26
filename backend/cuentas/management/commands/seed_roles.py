@@ -29,6 +29,7 @@ PERMISOS = [
     #adutorioa
     ("auditoria.ver", "Ver registros de auditoría"),
 
+    
 ]
 
 ROLES = {

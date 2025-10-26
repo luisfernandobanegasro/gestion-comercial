@@ -1,6 +1,10 @@
-from django.urls import path
-from .views import RegistroAuditoriaLista
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import RegistroAuditoriaViewSet
+
+router = DefaultRouter()
+router.register(r'', RegistroAuditoriaViewSet, basename='auditoria')
 
 urlpatterns = [
-    path("registros/", RegistroAuditoriaLista.as_view(), name="auditoria_registros"),
+    path("", include(router.urls)),
 ]
