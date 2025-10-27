@@ -26,8 +26,9 @@ class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Producto
         fields = [
-            "id","codigo","nombre","marca","marca_nombre","categoria","categoria_nombre",
-            "precio","precio_final","oferta_activa","stock","activo","creado_en","actualizado_en","imagen", "imagen_url"
+            "id", "codigo", "nombre", "modelo", "caracteristicas", "marca", "marca_nombre",
+            "categoria", "categoria_nombre", "precio", "precio_final", "oferta_activa",
+            "stock", "activo", "creado_en", "actualizado_en", "imagen", "imagen_url"
         ]   
         extra_kwargs = {'imagen': {'write_only': True, 'required': False}}
     def get_imagen_url(self, obj):

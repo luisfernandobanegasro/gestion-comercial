@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../api/axios'
 import { PATHS } from '../api/paths'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function Recuperar(){
   const [params] = useSearchParams()
@@ -75,11 +76,11 @@ function ResetConfirm({ uid, token }){
         <form className="grid" onSubmit={submit}>
           <div className="input-group">
             <input type={show1?'text':'password'} placeholder="Nueva contraseña" value={pass1} onChange={e=>setPass1(e.target.value)} required/>
-            <button type="button" className="icon-btn" onClick={()=>setShow1(v=>!v)}>{show1?'🙈':'👁️'}</button>
+            <button type="button" className="icon-btn" onClick={()=>setShow1(v=>!v)}>{show1 ? <EyeOff/> : <Eye/>}</button>
           </div>
           <div className="input-group">
             <input type={show2?'text':'password'} placeholder="Repite la contraseña" value={pass2} onChange={e=>setPass2(e.target.value)} required/>
-            <button type="button" className="icon-btn" onClick={()=>setShow2(v=>!v)}>{show2?'🙈':'👁️'}</button>
+            <button type="button" className="icon-btn" onClick={()=>setShow2(v=>!v)}>{show2 ? <EyeOff/> : <Eye/>}</button>
           </div>
           {error && <div style={{color:'#fca5a5'}}>{error}</div>}
           {ok && <div style={{color:'#22c55e'}}>Contraseña actualizada. Redirigiendo…</div>}

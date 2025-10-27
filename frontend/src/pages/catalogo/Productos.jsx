@@ -20,12 +20,13 @@ function ProductTable({ items, onEdit, onDelete }) {
   return (
     <div className="table-responsive">
       <table className="table-nowrap">
-        <thead><tr><th></th><th>Nombre</th><th>Categoría</th><th>Marca</th><th>Precio</th><th>Stock</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Nombre</th><th>Modelo</th><th>Categoría</th><th>Marca</th><th>Precio</th><th>Stock</th><th></th></tr></thead>
         <tbody>
           {items.map(p => (
             <tr key={p.id}>
               <td>{p.imagen_url && <img src={p.imagen_url} alt={p.nombre} style={{ width: 40, height: 40, objectFit: 'cover' }} />}</td>
               <td>{p.nombre}</td>
+              <td>{p.modelo}</td>
               <td>{p.categoria_nombre}</td>
               <td>{p.marca_nombre}</td>
               <td>{Number(p.precio || 0).toFixed(2)}</td>
@@ -50,6 +51,7 @@ function ProductForm({ form, setForm, save, categorias, marcas, handleFormChange
       <h3>{form.id ? 'Editar' : 'Nuevo'} producto</h3>
       <form className="grid" onSubmit={save}>
         <input name="nombre" placeholder="Nombre" value={form.nombre || ''} onChange={handleFormChange} required />
+        <input name="modelo" placeholder="Modelo (opcional)" value={form.modelo || ''} onChange={handleFormChange} />
         <select name="categoria" value={form.categoria || ''} onChange={handleFormChange} required>
           <option value="">-- Selecciona Categoría --</option>
           {categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
@@ -60,6 +62,7 @@ function ProductForm({ form, setForm, save, categorias, marcas, handleFormChange
         </select>
         <input name="precio" type="number" step="0.01" placeholder="Precio" value={form.precio || ''} onChange={handleFormChange} required />
         <input name="stock" type="number" placeholder="Stock" value={form.stock || ''} onChange={handleFormChange} required />
+        <textarea name="caracteristicas" placeholder="Características (opcional, una por línea)" value={form.caracteristicas || ''} onChange={handleFormChange} rows="4"></textarea>
         <ImageUploader onFileChange={file => setFormField('imagen', file)} initialImage={form.imagen_url} />
         <button className="primary">{form.id ? 'Actualizar' : 'Guardar'}</button>
         <button type="button" onClick={() => setForm(null)}>Cancelar</button>

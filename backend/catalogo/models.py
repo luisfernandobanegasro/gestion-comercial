@@ -108,6 +108,8 @@ class Producto(models.Model):
         help_text="Código interno del producto (único). Si lo dejas vacío al crear, se autogenera."
     )
     nombre = models.CharField(max_length=120)
+    modelo = models.CharField(max_length=100, blank=True, help_text="Ej: G502 Hero, Viper Mini, etc.")
+    caracteristicas = models.TextField(blank=True, help_text="Características adicionales del producto, una por línea.")
     marca = models.ForeignKey(
         Marca,
         on_delete=models.PROTECT,
