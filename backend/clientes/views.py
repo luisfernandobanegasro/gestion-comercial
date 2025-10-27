@@ -13,7 +13,7 @@ class ClienteViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
     filterset_class = ClienteFilter
     ordering_fields = ["nombre", "creado_en"]
-    search_fields = ["nombre","email","telefono"]
+    search_fields = ["nombre","email","telefono","documento"]
 
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:

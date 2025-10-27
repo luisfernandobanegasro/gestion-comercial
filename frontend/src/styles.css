@@ -182,3 +182,495 @@ body.sidebar-collapsed .main-content {
     gap: 8px; /* Reducimos el espaciado entre elementos del grid */
   }
 }
+
+/* ——— 1) Evitar que el grid crezca más que el viewport ——— */
+/* Cualquier columna de grid/flex que contenga tablas o cards debe poder encogerse */
+.app > * { min-width: 0; }
+.main, .container, .card, .grid > * { min-width: 0; }
+
+/* ——— 2) Sidebar como drawer en móvil: ancho fijo y capa por encima ——— */
+@media (max-width: 900px){
+  .sidebar{
+    width: 280px;                 /* <— ancho explícito del drawer */
+    inset: 0 auto 0 0;
+    transform: translateX(-102%);
+    z-index: 60;
+  }
+  .app.show-side .sidebar{ transform: translateX(0); }
+  .mobile-backdrop{ z-index: 55; }
+}
+
+/* ——— 3) Tablas verdaderamente responsivas (no empujan el layout) ——— */
+.table-responsive{
+  overflow-x: auto;              /* solo muestra scroll si hace falta */
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable both-edges; /* evita saltos de layout al aparecer el scroll */
+  width: 100%;
+}
+
+.table-responsive table{
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;           /* respeta <colgroup> y evita “empujes” raros */
+  min-width: 680px;              /* 1 solo valor consistente para móvil */
+}
+
+.table-responsive th,
+.table-responsive td{
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+  white-space: normal;
+}
+
+
+/* Si en algún listado SÍ quieres nowrap, aplica .table-nowrap a esa tabla puntual */
+.table-nowrap td, .table-nowrap th{ white-space: nowrap; }
+
+/* ——— 4) Pestañas y filas de botones que no empujan el ancho en móvil ——— */
+.tabs{ flex-wrap: wrap; }
+.btn-row{ flex-wrap: wrap; }
+
+/* ——— 5) Formularios con columnas fluidas ——— */
+.form-row{ display:grid; gap:12px; grid-template-columns: repeat(2, minmax(0,1fr)); }
+@media (max-width:900px){ .form-row{ grid-template-columns: 1fr; } }
+
+/* ——— 6) Pequeño “guardrail” global por si algo más desborda ——— */
+html, body{ overflow-x: hidden; } /* opcional pero útil para prevenir scroll horizontal */
+
+/* Mantiene los números en una sola línea y centrados visualmente */
+.nowrap {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* si algún número es muy largo, corta con ... */
+}
+
+/* Evita que las columnas numéricas se achiquen demasiado */
+.table-numeros {
+  text-align: center;
+  min-width: 100px; /* ancho mínimo razonable */
+}
+/* Evita que los encabezados se partan en varias líneas */
+.th-nowrap { white-space: nowrap; }
+
+/* Columnas numéricas compactas, sin salto de línea */
+.col-num {
+  white-space: nowrap;
+  text-align: center;
+  min-width: 108px;   /* ancho mínimo para que no se rompa “Teléfono” */
+}
+
+/* Asegura una mesa con ancho mínimo suficiente en móvil */
+.table-responsive table { min-width: 640px; } /* sube/baja si lo necesitas */
+
+/* Botón de acción compacto con icono */
+.action-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--text);
+  border-radius:8px;
+  padding:8px 12px;
+  line-height:1;
+}
+.action-btn:hover{ background:var(--border) }
+.action-btn svg{ width:18px; height:18px }
+
+/* En pantallas chicas: solo ícono */
+@media (max-width: 700px){
+  .action-btn .label{ display:none; }
+  .action-btn{ padding:8px; border-radius:10px; } /* cuadradito */
+}
+
+/* Columna de acciones angosta y centrada */
+.col-actions{
+  width:56px;           /* ~ icon button */
+  text-align:center;
+  white-space:nowrap;
+}
+
+/* === Corrección definitiva de columnas (no se parten) === */
+
+/* Nombre y email: sin romper palabra, con ellipsis si es muy largo */
+.col-text{
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.col-num{
+  white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Cabeceras sin salto */
+.th-nowrap { white-space: nowrap; }
+
+/* Asegura que la tabla no se colapse en móvil */
+.table-responsive table { 
+  min-width: 700px; /* un poco más de ancho, mantiene columnas proporcionales */
+}
+
+/* Alinea todo mejor en pantallas pequeñas */
+@media (max-width: 700px){
+  .col-text { max-width: 160px; } /* evita desbordar */
+  .col-num { min-width: 90px; }
+}
+
+/* Split adaptable: lista + formulario */
+.panel-split{ display:grid; gap:16px; grid-template-columns:1fr; }
+.panel-split.has-form{ grid-template-columns: 1fr 380px; }
+@media (max-width:1024px){ .panel-split.has-form{ grid-template-columns:1fr; } }
+
+/* Columnas compactas / acciones / img */
+.col-actions{ width:56px; text-align:center; white-space:nowrap; }
+.col-num{ white-space:nowrap; text-align:center; }
+.col-text{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.col-img{ width:56px; }
+.table-xs th, .table-xs td{ padding:8px 10px; }
+
+/* Para productos: tabla algo más ancha y estable */
+.products-table{ min-width: 880px; table-layout:fixed; }
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.input-group label {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+input[type="datetime-local"] {
+  font-size: 0.9rem;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  padding: 6px 8px;
+}
+
+/* tabla más estable */
+.table-nowrap td, .table-nowrap th {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* Bitácora: mostrar todo, sin recortes ni "..." */
+.table-no-ellipsis {
+  table-layout: auto;        /* deja que la tabla mida su ancho real */
+  min-width: 1100px;         /* fuerza scroll horizontal si no cabe */
+}
+.table-no-ellipsis th,
+.table-no-ellipsis td {
+  white-space: nowrap;       /* NO partir en varias líneas */
+  overflow: visible;         /* NO ocultar contenido */
+  text-overflow: unset;      /* NO "..." */
+}
+
+/* ===== Bitácora: tabla sin recortes, columnas fijas y scroll si no cabe ===== */
+.audit-table{
+  table-layout: fixed;     /* fija el ancho de cada columna según el colgroup */
+  min-width: 1180px;       /* fuerza scroll horizontal en móviles/ventanas estrechas */
+  border-collapse: collapse;
+}
+.audit-table th,
+.audit-table td{
+  white-space: nowrap;     /* no partir texto en dos líneas */
+  overflow: visible;       /* no ocultar contenido */
+  text-overflow: clip;     /* sin "..." */
+}
+
+/* Encabezados sin salto */
+.audit-table .th-nowrap{ white-space: nowrap; }
+
+/* La celda de ruta puede ser MUY larga: dale un poco más de aire en pantallas chicas */
+@media (max-width: 700px){
+  .audit-table{ min-width: 1280px; } /* un poco más ancha para evitar empujes */
+}
+
+/* ===== Bitácora: tabla sin superposición, columnas fijas y scroll ===== */
+.audit-table{
+  table-layout: fixed;      /* fija el ancho de columnas según colgroup */
+  min-width: 1280px;        /* fuerza scroll horizontal si no cabe */
+  border-collapse: collapse;
+}
+.audit-table th,
+.audit-table td{
+  white-space: nowrap;      /* no partir texto en varias líneas */
+  overflow: visible;        /* no ocultar contenido */
+  text-overflow: clip;      /* sin "..." */
+}
+
+/* Cabecera sticky para listas largas */
+.sticky-head thead th{
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+/* Barra de rango rápido: compacta y responsive */
+.quick-range{ margin-top: 10px; }
+.quick-range button{ padding:8px 10px; }
+
+/* (Opcional) scrollbar suave en la tabla */
+.table-responsive{
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* ===== Ventas: grid más robusto ===== */
+.ventas-layout{
+  display:grid;
+  gap:16px;
+  grid-template-columns: minmax(0,1fr) minmax(320px, 420px);
+}
+@media (max-width: 1024px){
+  .ventas-layout{ grid-template-columns: 1fr; }
+}
+
+/* Sticky solo en escritorio */
+.carrito-sticky{ position: sticky; top: 80px; align-self: start; }
+@media (max-width: 1024px){
+  .carrito-sticky{ position: static; top: auto; }
+}
+
+/* El card del carrito no empuja el layout */
+.carrito-card{ max-width: 100%; overflow: hidden; }
+
+/* Tabla del carrito: ancho mínimo propio y scroll local */
+.carrito-card .table-responsive{ overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.carrito-card .table-responsive table{
+  width: 100%;
+  table-layout: fixed;
+  min-width: 360px;           /* cabe en la columna derecha */
+}
+.carrito-card .table-responsive th,
+.carrito-card .table-responsive td{
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* Input cantidad compacto */
+.input-cantidad{
+  width: 72px;
+  text-align: center;
+  padding: 6px 4px;
+}
+
+/* Evita que otros min-width globales afecten al carrito */
+@media (max-width: 1024px){
+  .carrito-card .table-responsive table{ min-width: 320px; }
+}
+/* === Botón de icono genérico (para carrito/stepper) === */
+.btn-icon{
+  position: static;                 /* clave: evita el 'absolute' de .icon-btn global */
+  right: auto; top: auto;           /* sin offsets */
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+}
+.btn-icon:hover{ background: var(--border); }
+
+/* En el stepper no queremos doble borde */
+.qty-stepper .btn-icon{ border: none; }
+
+/* ===== Ventas: grid más robusto (ya lo tienes; lo dejo aquí por si faltaba) ===== */
+.ventas-layout{
+  display:grid;
+  gap:16px;
+  grid-template-columns: minmax(0,1fr) minmax(320px, 420px);
+}
+@media (max-width: 1024px){
+  .ventas-layout{ grid-template-columns: 1fr; }
+}
+
+/* Sticky solo en escritorio */
+.carrito-sticky{ position: sticky; top: 80px; align-self: start; }
+@media (max-width: 1024px){
+  .carrito-sticky{ position: static; top: auto; }
+}
+
+/* El card del carrito no empuja el layout */
+.carrito-card{ max-width: 100%; overflow: hidden; }
+
+/* Tabla del carrito: ancho mínimo propio y scroll local */
+.carrito-card .table-responsive{ overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.carrito-card .table-responsive table{
+  width: 100%;
+  table-layout: fixed;
+  min-width: 360px;
+}
+@media (max-width: 1024px){
+  .carrito-card .table-responsive table{ min-width: 320px; }
+}
+.carrito-card .table-responsive th,
+.carrito-card .table-responsive td{
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* Input cantidad compacto */
+.input-cantidad{
+  width: 72px;
+  text-align: center;
+  padding: 6px 4px;
+}
+
+/* Cantidad: permitir que el stepper "respire" dentro del td */
+.carrito-card td.col-cant{
+  overflow: visible;            /* anula el hidden heredado */
+  text-overflow: initial;
+  white-space: nowrap;
+}
+
+/* Stepper: alturas y legibilidad del número */
+.qty-stepper{
+  height: 36px;                 /* alto consistente */
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+}
+.qty-stepper .btn-icon{
+  width: 32px;
+  height: 32px;
+  border: none;                 /* evita doble borde en el contenedor */
+}
+.input-cantidad{
+  width: 64px;                  /* ajuste fino */
+  height: 32px;                 /* ← clave: asegura que no se “corte” */
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quitar flechitas del input number (mejor estética) */
+.input-cantidad::-webkit-outer-spin-button,
+.input-cantidad::-webkit-inner-spin-button{
+  -webkit-appearance: none;
+  margin: 0;
+}
+.input-cantidad[type="number"]{
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* GRID LAYOUT */
+.venta-grid{
+  display:grid;
+  gap:16px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 900px){
+  .venta-grid{ grid-template-columns: 2fr 1fr; }
+}
+
+/* HEADER */
+.venta-header{
+  display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap;
+}
+.venta-title{ min-width:220px; }
+.venta-subtitle{ display:block; font-size:12px; color:var(--muted); letter-spacing:.5px; }
+.venta-folio{
+  margin:.25rem 0 0; font-size:clamp(18px, 2.2vw, 24px); line-height:1.2;
+  word-break:break-word;
+}
+
+/* META */
+.venta-meta{ display:grid; grid-template-columns:1fr; gap:6px; margin:8px 0 12px; }
+@media (min-width: 520px){
+  .venta-meta{ grid-template-columns:1fr 1fr; }
+}
+
+/* STATUS PILL */
+.status-pill{
+  margin-left:auto; padding:6px 10px; border-radius:999px; font-size:12px;
+  border:1px solid var(--border); background:var(--surface);
+  text-transform:capitalize;
+}
+.status-pill.pendiente{ background:rgba(234,179,8,.12); border-color:#f59e0b22; color:#fbbf24; }
+.status-pill.pagada{ background:rgba(34,197,94,.12); border-color:#22c55e22; color:#34d399; }
+
+/* TABLE */
+.table-scroll{ overflow:auto; -webkit-overflow-scrolling:touch; }
+.table{ width:100%; border-collapse:separate; border-spacing:0; min-width:520px; }
+.table thead th{
+  position:sticky; top:0; background:var(--card); z-index:1; font-weight:600;
+  border-bottom:1px solid var(--border);
+}
+.table td, .table th{ padding:10px 12px; border-bottom:1px solid var(--border); }
+.ta-right{ text-align:right; }
+
+/* UTILS */
+.btn-row{ display:flex; flex-wrap:wrap; gap:8px; }
+.stack{ display:flex; flex-direction:column; }
+.gap-8{ gap:8px; }
+.muted{ color:var(--muted); }
+
+.pay-panel{
+  border:1px solid var(--border);
+  background:var(--surface);
+  border-radius:12px;
+  padding:12px;
+  max-width:520px;
+}
+.ghost{
+  background:transparent; border:1px solid var(--border); padding:8px 12px; border-radius:10px;
+}
+.mt-8{ margin-top:8px; }
+
+button{ padding:8px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; }
+button.primary{ background:var(--primary); color:var(--primary-ink); border-color:transparent; }
+button:disabled{ opacity:.6; cursor:not-allowed; }
+.card{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; }
+
+/* Acciones: ya NO definimos width aquí (lo define el <col> en JSX) */
+.col-actions{
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Botón de acción */
+.action-btn{
+  display:inline-flex; align-items:center; gap:8px;
+  background:transparent; border:1px solid var(--border);
+  color:var(--text); border-radius:8px; padding:8px 12px; line-height:1;
+}
+.action-btn:hover{ background:var(--border) }
+.action-btn svg{ width:18px; height:18px }
+@media (max-width: 700px){
+  .action-btn .label{ display:none }
+  .action-btn{ padding:8px; border-radius:10px }
+}
+
+/* Cabeceras sin salto */
+.th-nowrap{ white-space: nowrap }
+
+/* === LISTA + FORM EN DOS COLUMNAS (desktop) === */
+.panel-split{ display:grid; gap:16px; grid-template-columns:1fr; }
+.panel-split.has-form{ grid-template-columns: minmax(0,1fr) 380px; }
+@media (max-width:1024px){
+  .panel-split.has-form{ grid-template-columns:1fr; }
+}
+
+/* Evita que algo externo genere scroll horizontal global */
+.app > *, .main, .container, .card, .grid > * { min-width: 0; }
+html, body { overflow-x: hidden; }

@@ -49,21 +49,29 @@ export default function DetalleVenta() {
   if (loading) return <div className="card">Cargando detalle de la venta...</div>
   if (!venta) return <div className="card">Venta no encontrada.</div>
 
+  // DetalleVenta.jsx (solo la parte del render)
   return (
-    <div className="grid">
+    <div className="venta-grid">
       <div className="card">
-        <div className="btn-row">
-          <h2>Detalle de Venta - Folio: {venta.folio}</h2>
-          <span className="spacer"></span>
+        <header className="venta-header">
+          <div className="venta-title">
+            <span className="venta-subtitle">Detalle de Venta</span>
+            <h1 className="venta-folio">Folio: {venta.folio}</h1>
+          </div>
           <span className={`status-pill ${venta.estado}`}>{venta.estado}</span>
+        </header>
+
+        <div className="venta-meta">
+          <div><strong>Cliente:</strong> {venta.cliente_obj?.nombre || 'N/A'}</div>
+          <div><strong>Fecha:</strong> {new Date(venta.creado_en).toLocaleString()}</div>
         </div>
-        <p><strong>Cliente:</strong> {venta.cliente_obj?.nombre || 'N/A'}</p>
-        <p><strong>Fecha:</strong> {new Date(venta.creado_en).toLocaleString()}</p>
 
         <h3>Items de la Venta</h3>
-        <div className="table-responsive">
-          <table className="table-nowrap">
-            <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio Unit.</th><th>Subtotal</th></tr></thead>
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr><th>Producto</th><th>Cantidad</th><th>Precio Unit.</th><th>Subtotal</th></tr>
+            </thead>
             <tbody>
               {venta.items.map(it => (
                 <tr key={it.id}>
@@ -76,7 +84,7 @@ export default function DetalleVenta() {
             </tbody>
             <tfoot>
               <tr>
-                <th colSpan="3" style={{ textAlign: 'right' }}>Total:</th>
+                <th colSpan="3" className="ta-right">Total:</th>
                 <th>Bs. {Number(venta.total).toFixed(2)}</th>
               </tr>
             </tfoot>
@@ -87,22 +95,25 @@ export default function DetalleVenta() {
       <div className="card">
         <h3>Acciones</h3>
         {venta.estado === 'pendiente' && (
-          <div className="btn-row" style={{marginBottom: '16px'}}>
+          <div className="btn-row">
             <button onClick={() => navigate(`/ventas/editar/${venta.id}`)}>Editar Venta</button>
           </div>
         )}
 
         {venta.estado === 'pagada' ? (
-          <div className="btn-row">
+          <div className="stack gap-8">
             <button className="primary" onClick={descargarComprobante}>Descargar Comprobante (PDF)</button>
-            <p>Esta venta ya ha sido pagada.</p>
+            <p className="muted">Esta venta ya ha sido pagada.</p>
           </div>
         ) : venta.estado !== 'pendiente' && (
-          <p>No hay acciones disponibles para una venta en estado '{venta.estado}'.</p>
+          <p className="muted">No hay acciones disponibles para una venta en estado '{venta.estado}'.</p>
         )}
 
-        {venta.estado === 'pendiente' && <Pagos venta={venta} onPaymentSuccess={loadVenta} />}
+        {venta.estado === 'pendiente' && (
+          <Pagos venta={venta} onPaymentSuccess={loadVenta} />
+        )}
       </div>
     </div>
   )
+
 }

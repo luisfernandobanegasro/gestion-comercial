@@ -72,30 +72,47 @@ export default function Pagos({ venta, onPaymentSuccess }) {
 
       {/* Solo renderizamos el componente de Stripe si la vista es 'stripe' Y tenemos un clientSecret */}
       {activeView === 'stripe' && clientSecret && (
-        <div>
-          <Elements options={{ clientSecret }} stripe={stripePromise}>
+        <div className="pay-panel">
+          <Elements options={{ clientSecret, appearance:{ theme: 'night' } }} stripe={stripePromise}>
             <StripeCheckoutForm venta={venta} onPaymentSuccess={onPaymentSuccess} />
           </Elements>
-          <button onClick={() => { setActiveView('options'); setClientSecret(''); }} style={{marginTop: '8px'}}>Cancelar Pago con Tarjeta</button>
+          <button onClick={() => { setActiveView('options'); setClientSecret(''); }} className="ghost mt-8">
+            Cancelar Pago con Tarjeta
+          </button>
         </div>
       )}
 
+
       {activeView === 'qr' && (
-        <div style={{ textAlign: 'center' }}>
-          <h4>Pagar Bs. {venta.total}</h4>
-          <div style={{ background: 'white', padding: '16px', display: 'inline-block', margin: '16px 0' }}>
-            <QRCode value={qrData} size={200} />
-          </div>
-          {config && (
-            <div style={{ textAlign: 'left', background: 'var(--bg-alt, var(--bg))', padding: '12px', borderRadius: '8px' }}>
-              <p>O transfiere a:</p>
-              <p><strong>Banco:</strong> {config.nombre_banco}<br/><strong>Cuenta:</strong> {config.numero_cuenta}<br/><strong>Titular:</strong> {config.nombre_titular}</p>
+        <div className="qr-wrap">
+          <div className="qr-left">
+            <h4 className="amount">Pagar Bs. {Number(venta.total).toFixed(2)}</h4>
+            <div className="qr-box">
+              <QRCode value={qrData} size={220} />
             </div>
-          )}
-          <button className="primary" onClick={registrarPagoEfectivo} style={{marginTop: '16px'}}>He realizado el pago</button>
-          <button onClick={() => setActiveView('options')} style={{marginTop: '8px'}}>Cancelar Pago con QR</button>
+            <div className="btn-row">
+              <button className="primary" onClick={registrarPagoEfectivo}>He realizado el pago</button>
+              <button className="ghost" onClick={() => setActiveView('options')}>Cancelar</button>
+            </div>
+          </div>
+
+          <div className="qr-right">
+            <div className="bank-info">
+              <h5>Transferencia alternativa</h5>
+              {config ? (
+                <ul>
+                  <li><strong>Banco:</strong> {config.nombre_banco}</li>
+                  <li><strong>Cuenta:</strong> {config.numero_cuenta}</li>
+                  <li><strong>Titular:</strong> {config.nombre_titular}</li>
+                  {config.documento_titular && <li><strong>Documento:</strong> {config.documento_titular}</li>}
+                </ul>
+              ) : <p className="muted">Cargando datos de cuenta…</p>}
+            </div>
+            <p className="muted xs">Escanea el QR con tu app bancaria. Concepto: {config?.glosa_qr || 'Pago de productos'}.</p>
+          </div>
         </div>
       )}
+
     </>
   )
 }
