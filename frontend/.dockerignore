@@ -1,0 +1,6 @@
+# Ignorar dependencias locales, ya que se instalan dentro del contenedor
+node_modules
+
+# Ignorar archivos de build locales, ya que se generan dentro del contenedor
+dist
+build
