@@ -5,7 +5,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Paquetes necesarios para psycopg2, Pillow, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc \
     libpq-dev \
@@ -14,19 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Instala dependencias
-# Asegúrate de tener backend/requirements.txt en el repo
+# Tu workflow construye con contexto ./backend, así que este archivo existe:
 COPY requirements.txt /tmp/requirements.txt
-# Si tus reqs están en backend/requirements.txt usa: COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
-# Copia el código
+# Copia TODO lo que hay dentro de ./backend (manage.py, core/, apps, etc.)
 COPY . /app
-# Si prefieres solo la carpeta del backend: COPY backend/ /app
 
-# Ajusta si tu settings module tiene otro nombre
-ENV DJANGO_SETTINGS_MODULE=backend.settings
+# 👉 Tu proyecto real es "core"
+ENV DJANGO_SETTINGS_MODULE=core.settings
 
 EXPOSE 8000
-# Gunicorn en producción
-CMD ["gunicorn", "backend.wsgi:application", "-b", "0.0.0.0:8000", "--workers", "3", "--threads", "2", "--timeout", "60"]
+# 👉 y tu WSGI también es "core.wsgi"
+CMD ["gunicorn", "core.wsgi:application", "-b", "0.0.0.0:8000", "--workers", "3", "--threads", "2", "--timeout", "60"]
