@@ -1,24 +1,16 @@
 name: Debug AWS Action Resolution
 
-# Este workflow se ejecuta con cada push a main, igual que el otro.
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   test-action-resolution:
-    name: Test if GitHub can find the AWS action
     runs-on: ubuntu-latest
-
     steps:
-      # Este es el único paso real.
-      # No necesita credenciales ni nada más.
-      # Solo intentamos ver si GitHub puede "encontrar" la acción.
-      - name: Attempt to use aws-actions/login-ecr
-        uses: aws-actions/login-ecr@v1
+      - name: Try to resolve aws-actions/amazon-ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
         with:
-          # No pasamos credenciales a propósito, solo queremos ver si la encuentra.
-          # Si la encuentra, fallará por falta de credenciales, lo cual sería un ÉXITO para nosotros.
-          # Si falla con "repository not found", el problema es de GitHub.
-          aws-region: us-east-1
+          mask-password: 'true'
+        # Esto fallará más adelante si no hay credenciales,
+        # pero SI la acción se descarga, ya superamos el error original.

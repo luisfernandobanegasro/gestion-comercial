@@ -1,77 +1,33 @@
-# Nombre del Workflow que aparecerá en la pestaña "Actions" de GitHub
 name: Deploy to AWS ECR
 
-# --- Disparador (Trigger) ---
-# Esto le dice a GitHub cuándo debe ejecutar este workflow.
-# En este caso, se ejecutará cada vez que hagas un 'push' a la rama 'main'.
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
-# --- Variables de Entorno Globales ---
-# Definimos variables que estarán disponibles en todos los jobs del workflow.
 env:
-  # La región de AWS donde creaste tus repositorios ECR.
-  # ¡Asegúrate de que coincida con la tuya! ej: us-east-1, us-west-2, etc.
   AWS_REGION: us-east-1
-  # El nombre del repositorio ECR para el backend.
+  # Puedes usar namespaces con "/" en ECR sin problema.
   ECR_REPOSITORY_BACKEND: smart-sales-365/backend
-  # El nombre del repositorio ECR para el frontend.
   ECR_REPOSITORY_FRONTEND: smart-sales-365/frontend
 
-# --- Permisos ---
-# Le damos al workflow el permiso para escribir en los 'secrets' de OIDC.
-# Esto es para una configuración de seguridad más avanzada que usaremos más adelante.
 permissions:
   contents: read
+  # Si luego migras a OIDC (sin keys), añade: id-token: write
 
-# --- Concurrencia ---
-# Esto asegura que solo una ejecución de este workflow se ejecute a la vez para la misma rama.
-# Si haces push muy rápido, cancelará la ejecución anterior y comenzará la nueva.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# --- Jobs (Tareas) ---
-# Un workflow se compone de uno o más jobs que pueden ejecutarse en paralelo.
 jobs:
-  # --- Job para el Backend ---
   deploy-backend:
-    name: Build and Push Backend Image
-    runs-on: ubuntu-latest # Se ejecutará en una máquina virtual de Ubuntu
-    timeout-minutes: 15 # Tiempo máximo de ejecución para este job
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr-backend
-        uses: aws-actions/login-ecr@v1
-
-      - name: Build, tag, and push image to Amazon ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr-backend.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }} # Usamos el hash del commit como tag de la imagen
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG -f backend/Dockerfile ./backend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG
-
-  # --- Job para el Frontend ---
-  deploy-frontend:
-    name: Build and Push Frontend Image
+    name: Build & Push Backend Image
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # Tiempo máximo de ejecución para este job
+    timeout-minutes: 20
+    outputs:
+      image_uri_sha: ${{ steps.push.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.push.outputs.image_uri_latest }}
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
@@ -82,13 +38,88 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr-frontend
-        uses: aws-actions/login-ecr@v1
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr-frontend.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Ensure ECR repository exists
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG -f frontend/Dockerfile ./frontend
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG
+          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY_BACKEND }}" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "${{ env.ECR_REPOSITORY_BACKEND }}" >/dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push (backend)
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ env.ECR_REPOSITORY_BACKEND }}
+          SHA_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_SHA="$REGISTRY/$REPO:$SHA_TAG"
+          IMAGE_LATEST="$REGISTRY/$REPO:latest"
+
+          # Build con cache y push (contexto = ./backend, Dockerfile = backend/Dockerfile)
+          docker buildx build \
+            --file backend/Dockerfile \
+            --tag "$IMAGE_SHA" \
+            --tag "$IMAGE_LATEST" \
+            --cache-from=type=registry,ref="$REGISTRY/$REPO:cache" \
+            --cache-to=type=registry,mode=max,ref="$REGISTRY/$REPO:cache" \
+            --push \
+            ./backend
+
+          echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
+          echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
+
+  deploy-frontend:
+    name: Build & Push Frontend Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image_uri_sha: ${{ steps.push.outputs.image_uri_sha }}
+      image_uri_latest: ${{ steps.push.outputs.image_uri_latest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY_FRONTEND }}" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "${{ env.ECR_REPOSITORY_FRONTEND }}" >/dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push (frontend)
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ env.ECR_REPOSITORY_FRONTEND }}
+          SHA_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_SHA="$REGISTRY/$REPO:$SHA_TAG"
+          IMAGE_LATEST="$REGISTRY/$REPO:latest"
+
+          docker buildx build \
+            --file frontend/Dockerfile \
+            --tag "$IMAGE_SHA" \
+            --tag "$IMAGE_LATEST" \
+            --cache-from=type=registry,ref="$REGISTRY/$REPO:cache" \
+            --cache-to=type=registry,mode=max,ref="$REGISTRY/$REPO:cache" \
+            --push \
+            ./frontend
+
+          echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
+          echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
