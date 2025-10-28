@@ -26,6 +26,13 @@ env:
 permissions:
   contents: read
 
+# --- Concurrencia ---
+# Esto asegura que solo una ejecución de este workflow se ejecute a la vez para la misma rama.
+# Si haces push muy rápido, cancelará la ejecución anterior y comenzará la nueva.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # --- Jobs (Tareas) ---
 # Un workflow se compone de uno o más jobs que pueden ejecutarse en paralelo.
 jobs:
@@ -33,6 +40,7 @@ jobs:
   deploy-backend:
     name: Build and Push Backend Image
     runs-on: ubuntu-latest # Se ejecutará en una máquina virtual de Ubuntu
+    timeout-minutes: 15 # Tiempo máximo de ejecución para este job
 
     steps:
       - name: Checkout code
@@ -61,6 +69,7 @@ jobs:
   deploy-frontend:
     name: Build and Push Frontend Image
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # Tiempo máximo de ejecución para este job
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
