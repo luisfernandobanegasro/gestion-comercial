@@ -6,13 +6,13 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  # Puedes usar namespaces con "/" en ECR sin problema.
+  # Repos ECR (backend y frontend)
   ECR_REPOSITORY_BACKEND: smart-sales-365/backend
   ECR_REPOSITORY_FRONTEND: smart-sales-365/frontend
 
 permissions:
   contents: read
-  # Si luego migras a OIDC (sin keys), añade: id-token: write
+  # Si migras a OIDC: id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,7 +59,6 @@ jobs:
           IMAGE_SHA="$REGISTRY/$REPO:$SHA_TAG"
           IMAGE_LATEST="$REGISTRY/$REPO:latest"
 
-          # Build con cache y push (contexto = ./backend, Dockerfile = backend/Dockerfile)
           docker buildx build \
             --file backend/Dockerfile \
             --tag "$IMAGE_SHA" \
@@ -123,9 +122,10 @@ jobs:
 
           echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
           echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
+
   deploy-eb:
     name: Deploy to Elastic Beanstalk
-    needs: deploy-backend        # espera a que la imagen de backend esté en ECR
+    needs: deploy-backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -138,7 +138,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Tomamos la imagen que empujó deploy-backend (usa la de "latest")
+      # Render del Dockerrun con la imagen recién publicada (latest)
       - name: Render Dockerrun.aws.json
         run: |
           IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_latest }}"
@@ -151,15 +151,36 @@ jobs:
           aws s3 cp app.zip "s3://${{ secrets.EB_BUCKET }}/$KEY"
           echo "S3_KEY=$KEY" >> $GITHUB_ENV
 
-      - name: Create EB Application Version
+      # --- Opción A (idempotente): crear versión sólo si no existe ---
+      - name: Create EB Application Version (idempotent)
+        env:
+          APP_NAME: ${{ secrets.EB_APP_NAME }}
+          S3_BUCKET: ${{ secrets.EB_BUCKET }}
+          S3_KEY: ${{ env.S3_KEY }}
+          VERSION_LABEL: ${{ github.sha }}
         run: |
-          aws elasticbeanstalk create-application-version \
-            --application-name "${{ secrets.EB_APP_NAME }}" \
-            --version-label "${{ github.sha }}" \
-            --source-bundle S3Bucket="${{ secrets.EB_BUCKET }}",S3Key="${{ env.S3_KEY }}"
+          set -e
+          EXISTS=$(aws elasticbeanstalk describe-application-versions \
+            --application-name "$APP_NAME" \
+            --version-labels "$VERSION_LABEL" \
+            --query 'length(ApplicationVersions)' \
+            --output text)
+
+          if [ "$EXISTS" = "0" ]; then
+            echo "Creating version $VERSION_LABEL..."
+            aws elasticbeanstalk create-application-version \
+              --application-name "$APP_NAME" \
+              --version-label "$VERSION_LABEL" \
+              --source-bundle S3Bucket="$S3_BUCKET",S3Key="$S3_KEY"
+          else
+            echo "Version $VERSION_LABEL already exists. Reusing it."
+          fi
 
       - name: Update EB Environment
+        env:
+          ENV_NAME: ${{ secrets.EB_ENV_NAME }}
+          VERSION_LABEL: ${{ github.sha }}
         run: |
           aws elasticbeanstalk update-environment \
-            --environment-name "${{ secrets.EB_ENV_NAME }}" \
-            --version-label "${{ github.sha }}"
+            --environment-name "$ENV_NAME" \
+            --version-label "$VERSION_LABEL"
