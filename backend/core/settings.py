@@ -18,7 +18,17 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 # ================================
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
+
+# Hosts válidos (prod desde env)
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
+
+# Detrás de ELB/Proxy para que Django detecte HTTPS correctamente
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
+# Cookies más seguras cuando no estamos en debug
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
 
 # ================================
 # APPS
@@ -34,18 +44,21 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+
     # 3rd party
     "rest_framework",
     "django_filters",
     "drf_spectacular",
-    "corsheaders",  # <-- requiere `pip install django-cors-headers`
+    "corsheaders",  # pip install django-cors-headers
+
+    # Apps del dominio
     "auditoria",
     "catalogo",
     "clientes",
     "ventas",
     "pagos",
     "reportes",
-    "configuracion", # <-- Añadir esta línea
+    "configuracion",
     "analitica",
     "ia",
 ]
@@ -66,7 +79,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 
-    # Auditoría propia (si ya la tienes creada)
+    # Auditoría propia
     "core.middleware.AuditoriaMiddleware",
 ]
 
@@ -78,7 +91,7 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],  # p.ej. [FRONTEND_DIR / "dist"] si decides servir el build
+        "DIRS": [],  # Ej: [FRONTEND_DIR / "dist"] si sirves build de Vite desde Django
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -99,8 +112,8 @@ WSGI_APPLICATION = "core.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("PGDATABASE", "smart_sales"),
-        "USER": os.getenv("PGUSER", "smart_app"),
+        "NAME": os.getenv("PGDATABASE", "gestion_comercial"),
+        "USER": os.getenv("PGUSER", "postgres"),
         "PASSWORD": os.getenv("PGPASSWORD", ""),
         "HOST": os.getenv("PGHOST", "127.0.0.1"),
         "PORT": os.getenv("PGPORT", "5432"),
@@ -165,33 +178,38 @@ STATIC_URL = "static/"
 MEDIA_URL = "media/"
 STATIC_ROOT = BASE_DIR / "static"
 MEDIA_ROOT = BASE_DIR / "media"
-
-# Si en producción quieres servir el build de Vite desde Django:
-# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]
+# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]  # sólo si sirves assets del build
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ================================
-# CORS / CSRF (monorepo con frontend)
+# CORS / CSRF
 # ================================
+# Por defecto en dev todo abierto; en prod, controlado por FRONTEND_ORIGINS
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
     CORS_ALLOW_ALL_ORIGINS = False
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-CORS_ALLOW_CREDENTIALS = True
+# Permite inyectar orígenes desde ENV (CloudFront/dominio del frontend)
+FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "")
+if FRONTEND_ORIGINS:
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_ORIGINS.split(",") if o.strip()]
 
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+CORS_ALLOW_CREDENTIALS = True  # si vas a usar cookies/sesión
+
+# Confianza CSRF a los mismos orígenes (si usas cookies/CSRf desde frontend)
+CSRF_TRUSTED_ORIGINS = list(set(
+    [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        # añade dominios de CORS_ALLOWED_ORIGINS con esquema
+        *[o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])],
+    ]
+))
 
 # ================================
-# EMAIL & LOGGING (útil dev)
+# EMAIL & LOGGING
 # ================================
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 

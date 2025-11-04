@@ -1,0 +1,12 @@
+{
+  "AWSEBDockerrunVersion": "1",
+  "Image": {
+    "Name": "458329143192.dkr.ecr.us-east-1.amazonaws.com/smart-sales-365/backend:cb24c09b3783189d04c1566943a54c2e1d590c15",
+    "Update": "true"
+  },
+  "Ports": [
+    { "ContainerPort": 8000 }
+  ],
+  "Logging": "/var/log/gunicorn"
+}
+

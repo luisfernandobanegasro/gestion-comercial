@@ -123,3 +123,43 @@ jobs:
 
           echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
           echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
+  deploy-eb:
+    name: Deploy to Elastic Beanstalk
+    needs: deploy-backend        # espera a que la imagen de backend esté en ECR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Tomamos la imagen que empujó deploy-backend (usa la de "latest")
+      - name: Render Dockerrun.aws.json
+        run: |
+          IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_latest }}"
+          sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.aws.json > Dockerrun.rendered.json
+          zip -j app.zip Dockerrun.rendered.json
+
+      - name: Upload to S3
+        run: |
+          KEY="deployments/${{ github.sha }}.zip"
+          aws s3 cp app.zip "s3://${{ secrets.EB_BUCKET }}/$KEY"
+          echo "S3_KEY=$KEY" >> $GITHUB_ENV
+
+      - name: Create EB Application Version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ secrets.EB_APP_NAME }}" \
+            --version-label "${{ github.sha }}" \
+            --source-bundle S3Bucket="${{ secrets.EB_BUCKET }}",S3Key="${{ env.S3_KEY }}"
+
+      - name: Update EB Environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name "${{ secrets.EB_ENV_NAME }}" \
+            --version-label "${{ github.sha }}"

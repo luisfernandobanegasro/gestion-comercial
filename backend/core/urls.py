@@ -3,10 +3,14 @@ from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
+
+def root_health(_):
+    return JsonResponse({"service": "smart-sales-365-api", "status": "ok"})
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-
+    path("", root_health),
     # # OpenAPI
     path("api/esquema/", SpectacularAPIView.as_view(), name="esquema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="esquema"), name="docs"),
