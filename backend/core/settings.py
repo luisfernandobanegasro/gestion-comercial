@@ -1,4 +1,6 @@
-# core/settings.py
+# ================================================
+# core/settings.py — Configuración principal Django
+# ================================================
 from pathlib import Path
 import os
 from datetime import timedelta
@@ -8,36 +10,38 @@ from dotenv import load_dotenv
 # BASE DIR + .env
 # ================================
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env")  # Carga variables desde backend/.env
 
 # Monorepo (backend/, frontend/)
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
 # ================================
-# CONFIG BÁSICA
+# CONFIGURACIÓN BÁSICA
 # ================================
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 
-# Hosts válidos (prod desde env)
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()]
+# Hosts permitidos (importante para despliegue)
+ALLOWED_HOSTS = [
+    h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()
+]
 
-# Detrás de ELB/Proxy para que Django detecte HTTPS correctamente
+# Si hay proxy o load balancer (Elastic Beanstalk/ALB)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 
-# Cookies más seguras cuando no estamos en debug
+# Cookies seguras cuando no estamos en DEBUG
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 
 # ================================
-# APPS
+# APLICACIONES INSTALADAS
 # ================================
 INSTALLED_APPS = [
-    # Proyecto (la app de cuentas primero)
+    # Apps del proyecto (cuentas primero para AUTH_USER_MODEL)
     "cuentas",
 
-    # Django
+    # Django apps por defecto
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -45,13 +49,13 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # 3rd party
+    # Terceros
     "rest_framework",
     "django_filters",
     "drf_spectacular",
     "corsheaders",  # pip install django-cors-headers
 
-    # Apps del dominio
+    # Módulos del dominio
     "auditoria",
     "catalogo",
     "clientes",
@@ -70,7 +74,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
 
-    # CORS SIEMPRE antes de CommonMiddleware
+    # CORS siempre antes de CommonMiddleware
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
 
@@ -79,7 +83,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 
-    # Auditoría propia
+    # Middleware personalizado (auditoría)
     "core.middleware.AuditoriaMiddleware",
 ]
 
@@ -91,7 +95,8 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],  # Ej: [FRONTEND_DIR / "dist"] si sirves build de Vite desde Django
+        # Si decides servir el build de Vite desde Django
+        "DIRS": [],  # Ejemplo: [FRONTEND_DIR / "dist"]
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -107,7 +112,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "core.wsgi.application"
 
 # ================================
-# DATABASE (PostgreSQL)
+# BASE DE DATOS (PostgreSQL)
 # ================================
 DATABASES = {
     "default": {
@@ -121,12 +126,12 @@ DATABASES = {
 }
 
 # ================================
-# AUTH
+# AUTENTICACIÓN
 # ================================
 AUTH_USER_MODEL = "cuentas.Usuario"
 
 # ================================
-# DRF + JWT + OpenAPI
+# DJANGO REST FRAMEWORK + JWT + OpenAPI
 # ================================
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -154,7 +159,7 @@ SPECTACULAR_SETTINGS = {
 }
 
 # ================================
-# PASSWORD VALIDATORS
+# VALIDADORES DE CONTRASEÑA
 # ================================
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -164,7 +169,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # ================================
-# I18N
+# INTERNACIONALIZACIÓN
 # ================================
 LANGUAGE_CODE = "es"
 TIME_ZONE = os.getenv("TIME_ZONE", "America/La_Paz")
@@ -172,44 +177,43 @@ USE_I18N = True
 USE_TZ = True
 
 # ================================
-# STATIC & MEDIA
+# ARCHIVOS ESTÁTICOS Y MEDIA
 # ================================
 STATIC_URL = "static/"
 MEDIA_URL = "media/"
 STATIC_ROOT = BASE_DIR / "static"
 MEDIA_ROOT = BASE_DIR / "media"
-# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]  # sólo si sirves assets del build
+# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]  # si sirves build de Vite
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ================================
-# CORS / CSRF
+# CORS / CSRF (para frontend remoto)
 # ================================
-# Por defecto en dev todo abierto; en prod, controlado por FRONTEND_ORIGINS
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
     CORS_ALLOW_ALL_ORIGINS = False
 
-# Permite inyectar orígenes desde ENV (CloudFront/dominio del frontend)
+# Permite inyectar orígenes del frontend (desde .env o CloudFront)
 FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "")
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 if FRONTEND_ORIGINS:
-    CORS_ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_ORIGINS.split(",") if o.strip()]
+    CORS_ALLOWED_ORIGINS += [o.strip() for o in FRONTEND_ORIGINS.split(",") if o.strip()]
 
-CORS_ALLOW_CREDENTIALS = True  # si vas a usar cookies/sesión
+CORS_ALLOW_CREDENTIALS = True  # si usas cookies o sesión en frontend
 
-# Confianza CSRF a los mismos orígenes (si usas cookies/CSRf desde frontend)
-CSRF_TRUSTED_ORIGINS = list(set(
-    [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        # añade dominios de CORS_ALLOWED_ORIGINS con esquema
-        *[o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])],
-    ]
-))
+# Construimos dinámicamente CSRF_TRUSTED_ORIGINS
+CSRF_TRUSTED_ORIGINS = list(set([
+    *[o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])],
+    *[f"https://{h.strip()}" for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()],
+]))
 
 # ================================
-# EMAIL & LOGGING
+# EMAIL Y LOGGING
 # ================================
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
