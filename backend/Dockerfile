@@ -1,7 +1,6 @@
 # backend/Dockerfile
 FROM python:3.12-slim
 
-# -------- runtime envs básicos --------
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
@@ -13,35 +12,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo-dev zlib1g-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# -------- app dir --------
+# -------- dir de la app --------
 WORKDIR /app
 
 # -------- dependencias de Python --------
-# (aprovecha cache de capas si solo cambian fuentes)
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
-# -------- código de la app --------
-# (tu workflow construye con contexto ./backend)
+# -------- código --------
 COPY . /app
 
-# Tu proyecto real es "core"
+# Proyecto Django
 ENV DJANGO_SETTINGS_MODULE=core.settings
 
-# -------- assets estáticos del admin --------
-# Los genera en /app/static (usa STATIC_ROOT en settings.py)
+# -------- WhiteNoise: assets estáticos --------
+# (usa STATIC_ROOT de settings.py -> /app/static)
 RUN python manage.py collectstatic --noinput
 
-# -------- usuario no-root --------
+# -------- entrypoint (como root para poder chmod) --------
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# -------- usuario no root --------
 RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /app
 USER appuser
 
-# -------- puerto y arranque --------
 EXPOSE 8000
 
-# Script de entrada: migra y arranca gunicorn
-COPY docker/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
-# WSGI: core.wsgi
-CMD ["gunicorn", "core.wsgi:application", "-b", "0.0.0.0:8000", "--workers", "3", "--threads", "2", "--timeout", "60"]
+# Logs a stdout/stderr para EB
+CMD ["gunicorn", "core.wsgi:application", "-b", "0.0.0.0:8000", \
+     "--workers", "3", "--threads", "2", "--timeout", "60", \
+     "--access-logfile", "-", "--error-logfile", "-"]

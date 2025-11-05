@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
 set -e
 
-# Mostrar settings activos (útil para logs)
-echo "DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}"
+# Pequeña espera opcional si la DB tarda en estar lista (RDS)
+if [ -n "$PGHOST" ]; then
+  echo "Esperando a la base de datos $PGHOST:$PGPORT ..."
+  for i in {1..30}; do
+    python - <<'PY'
+import os, socket, sys
+host=os.getenv("PGHOST","127.0.0.1"); port=int(os.getenv("PGPORT","5432"))
+s=socket.socket(); s.settimeout(1)
+try:
+    s.connect((host, port)); print("DB OK")
+except Exception as e:
+    print("DB no disponible:", e); sys.exit(1)
+PY
+    if [ $? -eq 0 ]; then break; fi
+    sleep 1
+  done || true
+fi
 
-# Migraciones (la DB debe estar accesible por variables PG*)
+echo "Aplicando migraciones..."
 python manage.py migrate --noinput
 
-# Puedes seedear data inicial si lo necesitas (opcional)
-# python manage.py loaddata initial_data.json || true
+# Repetimos por seguridad (idempotente)
+echo "Colectando estáticos..."
+python manage.py collectstatic --noinput
 
-# Ejecuta el CMD del contenedor (gunicorn)
+echo "Arrancando: $*"
 exec "$@"
