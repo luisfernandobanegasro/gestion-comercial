@@ -1,11 +1,12 @@
 {
-  "AWSEBDockerrunVersion": "1",
-  "Image": {
-    "Name": "REPLACE_WITH_ECR_IMAGE",
-    "Update": "true"
-  },
-  "Ports": [
-    { "ContainerPort": 8000 }
-  ],
-  "Logging": "/var/log/gunicorn"
+  "AWSEBDockerrunVersion": "2",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "REPLACE_WITH_ECR_IMAGE",
+      "essential": true,
+      "memory": 512,
+      "portMappings": [{ "hostPort": 80, "containerPort": 8000 }]
+    }
+  ]
 }
