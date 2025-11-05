@@ -30,11 +30,11 @@ _env_hosts = [
 ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost", "0.0.0.0",
                                        ".elasticbeanstalk.com", ".compute.amazonaws.com"]))
 
-# Detrás de ALB/ELB (X-Forwarded-Proto/Host)
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# Detrás de ALB/ELB (X-Forwarded-Proto/Host). Esencial para que Django sepa su URL pública.
 USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# Fuerza HTTPS sólo si tu ALB ya tiene TLS
+# No forzar HTTPS. El balanceador de carga manejará el tráfico HTTP.
 SECURE_SSL_REDIRECT = os.getenv("FORCE_HTTPS", "0") == "1"
 
 # Cookies endurecidas en producción
