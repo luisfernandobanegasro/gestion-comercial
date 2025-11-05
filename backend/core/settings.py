@@ -21,21 +21,20 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 
-# Hosts permitidos
+# Hosts permitidos: de env + locales + EB
 _env_hosts = [
     h.strip()
     for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
     if h.strip()
 ]
-ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost"]))
-# Permitir host interno de EB y health checks
-ALLOWED_HOSTS += ["0.0.0.0", ".elasticbeanstalk.com", ".compute.amazonaws.com"]
+ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost", "0.0.0.0",
+                                       ".elasticbeanstalk.com", ".compute.amazonaws.com"]))
 
 # Detrás de ALB/ELB (X-Forwarded-Proto/Host)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 
-# Redirección a HTTPS (déjalo activado solo si tu ALB ya tiene TLS)
+# Fuerza HTTPS sólo si tu ALB ya tiene TLS
 SECURE_SSL_REDIRECT = os.getenv("FORCE_HTTPS", "0") == "1"
 
 # Cookies endurecidas en producción
@@ -210,13 +209,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ================================
 # CORS / CSRF
 # ================================
-# Orígenes locales por defecto (Vite)
 DEFAULT_FRONTEND_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
 
-# Orígenes adicionales desde env (ej. CloudFront)
 EXTRA_FRONTEND = [
     o.strip()
     for o in os.getenv("FRONTEND_ORIGINS", "").split(",")
@@ -225,22 +222,15 @@ EXTRA_FRONTEND = [
 
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
 CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND)
-CORS_ALLOW_CREDENTIALS = True  # si usas cookies/sesión
+CORS_ALLOW_CREDENTIALS = True
 
-# CSRF confía en tus orígenes + hosts (requiere esquema)
 _csrf_from_cors = [
     o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])
 ]
 _csrf_from_hosts = [
     f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
-CSRF_TRUSTED_ORIGINS = list(
-    set(
-        _csrf_from_cors
-        + _csrf_from_hosts
-        + ["https://*.elasticbeanstalk.com"]
-    )
-)
+CSRF_TRUSTED_ORIGINS = list(set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"]))
 
 # ================================
 # Email y Logging

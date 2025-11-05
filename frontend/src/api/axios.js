@@ -3,7 +3,7 @@ import axios from 'axios'
 import { PATHS } from './paths'
 
 // 1) Base URL única para TODO el frontend (sin slash final)
-export const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000/api').replace(/\/+$/, '')
+export const API_BASE = (import.meta.env.VITE_API_URL || 'https://smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com/api').replace(/\/+$/, '')
 
 const api = axios.create({
   baseURL: API_BASE, // -> ej: http://localhost:8000/api
