@@ -8,7 +8,6 @@ env:
   AWS_REGION: us-east-1
   # Repos ECR (backend y frontend)
   ECR_REPOSITORY_BACKEND: smart-sales-365/backend
-  ECR_REPOSITORY_FRONTEND: smart-sales-365/frontend
 
 permissions:
   contents: read
@@ -73,59 +72,47 @@ jobs:
 
   deploy-frontend:
     name: Build & Push Frontend Image
+    name: Build & Deploy Frontend to S3/CloudFront
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      image_uri_sha: ${{ steps.push.outputs.image_uri_sha }}
-      image_uri_latest: ${{ steps.push.outputs.image_uri_latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 1. Configurar Node.js para poder construir el proyecto
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # 2. Instalar dependencias y construir los archivos estáticos (genera la carpeta 'dist')
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      # 3. Configurar credenciales de AWS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Ensure ECR repository exists
-        run: |
-          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY_FRONTEND }}" >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name "${{ env.ECR_REPOSITORY_FRONTEND }}" >/dev/null
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build & Push (frontend)
-        id: push
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          REPO: ${{ env.ECR_REPOSITORY_FRONTEND }}
-          SHA_TAG: ${{ github.sha }}
-        run: |
-          IMAGE_SHA="$REGISTRY/$REPO:$SHA_TAG"
-          IMAGE_LATEST="$REGISTRY/$REPO:latest"
-
-          docker buildx build \
-            --file frontend/Dockerfile \
-            --tag "$IMAGE_SHA" \
-            --tag "$IMAGE_LATEST" \
-            --cache-from=type=registry,ref="$REGISTRY/$REPO:cache" \
-            --cache-to=type=registry,mode=max,ref="$REGISTRY/$REPO:cache" \
-            --push \
-            ./frontend
-
-          echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
-          echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
+      
+      # 4. Sincronizar la carpeta 'dist' con el bucket S3
+      - name: Deploy to S3
+        run: aws s3 sync ./frontend/dist s3://frontend-product-ef --delete
+      
+      # 5. Invalidar la caché de CloudFront para que los cambios se vean al instante
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id E3UB71D49BVXGB --paths "/*"
 
   deploy-eb:
     name: Deploy to Elastic Beanstalk
-    needs: deploy-backend
+    needs: [deploy-backend] # Ya no depende del frontend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -142,7 +129,7 @@ jobs:
       - name: Render Dockerrun.aws.json
         run: |
           IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_latest }}"
-          sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.aws.json > Dockerrun.rendered.json
+          sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.aws.json > Dockerrun.rendered.json # Usamos un placeholder genérico
           zip -j app.zip Dockerrun.rendered.json
 
       - name: Upload to S3
