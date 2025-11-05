@@ -1,47 +1,39 @@
-# ================================================
-# core/settings.py — Configuración principal Django
-# ================================================
+# core/settings.py
 from pathlib import Path
 import os
 from datetime import timedelta
 from dotenv import load_dotenv
 
-# ================================
-# BASE DIR + .env
-# ================================
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")  # Carga variables desde backend/.env
+load_dotenv(BASE_DIR / ".env")
 
-# Monorepo (backend/, frontend/)
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
-# ================================
-# CONFIGURACIÓN BÁSICA
-# ================================
+# ------------------- Básico -------------------
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 
-# Hosts permitidos (importante para despliegue)
-ALLOWED_HOSTS = [
-    h.strip() for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if h.strip()
-]
+# Hosts (admite EB + IP pública + localhost)
+_default_hosts = ["127.0.0.1", "localhost"]
+_env_hosts = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+ALLOWED_HOSTS = list(dict.fromkeys(_default_hosts + _env_hosts + [
+    "*.elasticbeanstalk.com",          # cualquier env EB
+    "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
+    "3.210.148.147",                   # IP pública que salió en logs
+]))
 
-# Si hay proxy o load balancer (Elastic Beanstalk/ALB)
+# Detrás de ALB/Proxy en EB
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
-
-# Cookies seguras cuando no estamos en DEBUG
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 
-# ================================
-# APLICACIONES INSTALADAS
-# ================================
+# ------------------- Apps -------------------
 INSTALLED_APPS = [
-    # Apps del proyecto (cuentas primero para AUTH_USER_MODEL)
+    # proyecto
     "cuentas",
 
-    # Django apps por defecto
+    # Django
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -49,13 +41,13 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Terceros
+    # terceros
     "rest_framework",
     "django_filters",
     "drf_spectacular",
-    "corsheaders",  # pip install django-cors-headers
+    "corsheaders",
 
-    # Módulos del dominio
+    # módulos
     "auditoria",
     "catalogo",
     "clientes",
@@ -67,53 +59,42 @@ INSTALLED_APPS = [
     "ia",
 ]
 
-# ================================
-# MIDDLEWARE
-# ================================
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+
+    # WhiteNoise para estáticos en contenedor
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+
     "django.contrib.sessions.middleware.SessionMiddleware",
-
-    # CORS siempre antes de CommonMiddleware
-    "corsheaders.middleware.CorsMiddleware",
+    "corsheaders.middleware.CorsMiddleware",   # antes de CommonMiddleware
     "django.middleware.common.CommonMiddleware",
-
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 
-    # Middleware personalizado (auditoría)
     "core.middleware.AuditoriaMiddleware",
 ]
 
 ROOT_URLCONF = "core.urls"
 
-# ================================
-# TEMPLATES
-# ================================
-TEMPLATES = [
-    {
-        "BACKEND": "django.template.backends.django.DjangoTemplates",
-        # Si decides servir el build de Vite desde Django
-        "DIRS": [],  # Ejemplo: [FRONTEND_DIR / "dist"]
-        "APP_DIRS": True,
-        "OPTIONS": {
-            "context_processors": [
-                "django.template.context_processors.debug",
-                "django.template.context_processors.request",
-                "django.contrib.auth.context_processors.auth",
-                "django.contrib.messages.context_processors.messages",
-            ],
-        },
+TEMPLATES = [{
+    "BACKEND": "django.template.backends.django.DjangoTemplates",
+    "DIRS": [],
+    "APP_DIRS": True,
+    "OPTIONS": {
+        "context_processors": [
+            "django.template.context_processors.debug",
+            "django.template.context_processors.request",
+            "django.contrib.auth.context_processors.auth",
+            "django.contrib.messages.context_processors.messages",
+        ],
     },
-]
+}]
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# ================================
-# BASE DE DATOS (PostgreSQL)
-# ================================
+# ------------------- DB -------------------
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -122,17 +103,14 @@ DATABASES = {
         "PASSWORD": os.getenv("PGPASSWORD", ""),
         "HOST": os.getenv("PGHOST", "127.0.0.1"),
         "PORT": os.getenv("PGPORT", "5432"),
+        # Si usas SSL en RDS
+        "OPTIONS": {"sslmode": os.getenv("DB_SSLMODE", "prefer")},
     }
 }
 
-# ================================
-# AUTENTICACIÓN
-# ================================
 AUTH_USER_MODEL = "cuentas.Usuario"
 
-# ================================
-# DJANGO REST FRAMEWORK + JWT + OpenAPI
-# ================================
+# ------------------- DRF / JWT / OpenAPI -------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -158,9 +136,6 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
 }
 
-# ================================
-# VALIDADORES DE CONTRASEÑA
-# ================================
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -168,55 +143,49 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# ================================
-# INTERNACIONALIZACIÓN
-# ================================
 LANGUAGE_CODE = "es"
 TIME_ZONE = os.getenv("TIME_ZONE", "America/La_Paz")
 USE_I18N = True
 USE_TZ = True
 
-# ================================
-# ARCHIVOS ESTÁTICOS Y MEDIA
-# ================================
-STATIC_URL = "static/"
-MEDIA_URL = "media/"
+# ------------------- Static / Media -------------------
+STATIC_URL = "/static/"
+MEDIA_URL = "/media/"
 STATIC_ROOT = BASE_DIR / "static"
 MEDIA_ROOT = BASE_DIR / "media"
-# STATICFILES_DIRS = [FRONTEND_DIR / "dist"]  # si sirves build de Vite
+
+# WhiteNoise: comprimir y manifest
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    }
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ================================
-# CORS / CSRF (para frontend remoto)
-# ================================
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-
-# Permite inyectar orígenes del frontend (desde .env o CloudFront)
-FRONTEND_ORIGINS = os.getenv("FRONTEND_ORIGINS", "")
+# ------------------- CORS / CSRF -------------------
+# Orígenes del frontend
+_frontenv = os.getenv("FRONTEND_ORIGINS", "")
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-]
-if FRONTEND_ORIGINS:
-    CORS_ALLOWED_ORIGINS += [o.strip() for o in FRONTEND_ORIGINS.split(",") if o.strip()]
+] + [o.strip() for o in _frontenv.split(",") if o.strip()]
 
-CORS_ALLOW_CREDENTIALS = True  # si usas cookies o sesión en frontend
+CORS_ALLOW_ALL_ORIGINS = False if not DEBUG else True
+CORS_ALLOW_CREDENTIALS = True
 
-# Construimos dinámicamente CSRF_TRUSTED_ORIGINS
-CSRF_TRUSTED_ORIGINS = list(set([
-    *[o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])],
-    *[f"https://{h.strip()}" for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()],
-]))
+# Confiar en CloudFront + EB para CSRF
+_cf = [f"https://{o}" if not o.startswith("http") else o
+       for o in (_frontenv.split(",") if _frontenv else []) if o.strip()]
 
-# ================================
-# EMAIL Y LOGGING
-# ================================
+CSRF_TRUSTED_ORIGINS = list(set(
+    _cf
+    + [f"https://{h}" for h in _env_hosts if h and not h.startswith("*.")]
+    + ["https://*.elasticbeanstalk.com"]
+))
+
+# ------------------- Email / Logging -------------------
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -224,8 +193,6 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": "INFO"},
 }
 
-# ================================
-# STRIPE
-# ================================
+# ------------------- Stripe -------------------
 STRIPE_PUBLIC_KEY = os.getenv("STRIPE_PUBLIC_KEY")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
