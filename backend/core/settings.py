@@ -34,8 +34,8 @@ ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost", "0.0.0.0",
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# No forzar HTTPS. El balanceador de carga manejará el tráfico HTTP.
-SECURE_SSL_REDIRECT = os.getenv("FORCE_HTTPS", "0") == "1"
+# Forzar HTTPS en producción. El balanceador de carga debe tener un listener en el puerto 443.
+SECURE_SSL_REDIRECT = not DEBUG
 
 # Cookies endurecidas en producción
 SESSION_COOKIE_SECURE = not DEBUG
