@@ -3,7 +3,11 @@ import stripe
 from django.db import transaction, IntegrityError
 from django.conf import settings
 from .models import Pago
+from .exceptions import StripeConfigError, StripePaymentError
 from ventas.services import marcar_pagada, marcar_reembolsada
+
+if not settings.STRIPE_SECRET_KEY:
+    raise StripeConfigError("La clave secreta de Stripe (STRIPE_SECRET_KEY) no está configurada.")
 
 # Configurar la clave de API de Stripe al iniciar el módulo
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -52,8 +56,8 @@ def crear_stripe_payment_intent(pago: Pago):
         pago.save(update_fields=["referencia"])
         
         return intent.client_secret
-    except Exception as e:
-        raise ValueError(f"Error con Stripe: {str(e)}")
+    except stripe.error.StripeError as e:
+        raise StripePaymentError(f"Error al crear el PaymentIntent en Stripe: {str(e)}")
 
 @transaction.atomic
 def confirmar_pago_stripe(venta, usuario, idempotency_key: str | None = None) -> Pago:
