@@ -1,4 +1,4 @@
-name: Deploy to AWS ECR
+name: Deploy to AWS (Backend ECR + EB, Frontend S3/CF)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  # Repos ECR (backend y frontend)
+  # Repositorio ECR del backend
   ECR_REPOSITORY_BACKEND: smart-sales-365/backend
 
 permissions:
@@ -69,7 +69,7 @@ jobs:
 
           echo "image_uri_sha=$IMAGE_SHA" >> $GITHUB_OUTPUT
           echo "image_uri_latest=$IMAGE_LATEST" >> $GITHUB_OUTPUT
-  
+
   deploy-frontend-s3:
     name: Build & Deploy Frontend to S3/CloudFront
     runs-on: ubuntu-latest
@@ -78,40 +78,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1. Configurar Node.js para poder construir el proyecto
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm' # Habilita el cache para 'npm'
+          cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      # 2. Instalar dependencias y construir los archivos estáticos (genera la carpeta 'dist')
       - name: Build Frontend
         run: |
           cd frontend
-          npm ci # 'ci' es más rápido y seguro para CI/CD que 'install'
+          npm ci
           npm run build
 
-      # 3. Configurar credenciales de AWS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-      
-      # 4. Sincronizar la carpeta 'dist' con el bucket S3
+
       - name: Deploy to S3
         run: aws s3 sync ./frontend/dist s3://frontend-product-ef --delete
-      
-      # 5. Invalidar la caché de CloudFront para que los cambios se vean al instante
+
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id E3UB71D49BVXGB --paths "/*"
 
   deploy-eb:
     name: Deploy to Elastic Beanstalk
-    needs: [deploy-backend] # Ya no depende del frontend
+    needs: [deploy-backend]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -124,12 +119,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Render del Dockerrun con la imagen recién publicada (latest)
+      # Renderiza el Dockerrun v1 (single container) usando la imagen con tag SHA
       - name: Render Dockerrun.aws.json
         run: |
-          IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_latest }}"
-          sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.aws.json > Dockerrun.rendered.json # Usamos un placeholder genérico
-          zip -j app.zip Dockerrun.rendered.json
+          IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_sha }}"
+          sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.template.json > Dockerrun.aws.json
+          zip -j app.zip Dockerrun.aws.json
+          # Si existen directorios de configuración, inclúyelos:
+          [ -d .ebextensions ] && zip -r app.zip .ebextensions
+          [ -d .platform ] && zip -r app.zip .platform
 
       - name: Upload to S3
         run: |
@@ -137,30 +135,18 @@ jobs:
           aws s3 cp app.zip "s3://${{ secrets.EB_BUCKET }}/$KEY"
           echo "S3_KEY=$KEY" >> $GITHUB_ENV
 
-      # --- Opción A (idempotente): crear versión sólo si no existe ---
-      - name: Create EB Application Version (idempotent)
+      - name: Create EB Application Version
         env:
           APP_NAME: ${{ secrets.EB_APP_NAME }}
           S3_BUCKET: ${{ secrets.EB_BUCKET }}
           S3_KEY: ${{ env.S3_KEY }}
           VERSION_LABEL: ${{ github.sha }}
         run: |
-          set -e
-          EXISTS=$(aws elasticbeanstalk describe-application-versions \
+          aws elasticbeanstalk create-application-version \
             --application-name "$APP_NAME" \
-            --version-labels "$VERSION_LABEL" \
-            --query 'length(ApplicationVersions)' \
-            --output text)
-
-          if [ "$EXISTS" = "0" ]; then
-            echo "Creating version $VERSION_LABEL..."
-            aws elasticbeanstalk create-application-version \
-              --application-name "$APP_NAME" \
-              --version-label "$VERSION_LABEL" \
-              --source-bundle S3Bucket="$S3_BUCKET",S3Key="$S3_KEY"
-          else
-            echo "Version $VERSION_LABEL already exists. Reusing it."
-          fi
+            --version-label "$VERSION_LABEL" \
+            --source-bundle S3Bucket="$S3_BUCKET",S3Key="$S3_KEY" \
+            --auto-create-application
 
       - name: Update EB Environment
         env:
@@ -170,3 +156,9 @@ jobs:
           aws elasticbeanstalk update-environment \
             --environment-name "$ENV_NAME" \
             --version-label "$VERSION_LABEL"
+
+      - name: Wait for EB to finish updating
+        env:
+          ENV_NAME: ${{ secrets.EB_ENV_NAME }}
+        run: |
+          aws elasticbeanstalk wait environment-updated --environment-names "$ENV_NAME"

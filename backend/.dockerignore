@@ -13,3 +13,8 @@ media/
 staticfiles/
 .git
 .gitignore
+/.venv
+/.pytest_cache
+/.mypy_cache
+/static/
+.env.*

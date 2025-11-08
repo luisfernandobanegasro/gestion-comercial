@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 set -e
 
-# Pequeña espera opcional si la DB tarda en estar lista (RDS)
-if [ -n "$PGHOST" ]; then
-  echo "Esperando a la base de datos $PGHOST:$PGPORT ..."
-  for i in {1..30}; do
-    python - <<'PY'
-import os, socket, sys
-host=os.getenv("PGHOST","127.0.0.1"); port=int(os.getenv("PGPORT","5432"))
-s=socket.socket(); s.settimeout(1)
-try:
-    s.connect((host, port)); print("DB OK")
-except Exception as e:
-    print("DB no disponible:", e); sys.exit(1)
-PY
-    if [ $? -eq 0 ]; then break; fi
-    sleep 1
-  done || true
-fi
+# Opcional: espera a que la DB responda (si usas Postgres en RDS)
+# python - <<'PY'
+# import os, time, psycopg2
+# from urllib.parse import urlparse
+# url = os.getenv("DATABASE_URL", "")
+# if url:
+#     for _ in range(30):
+#         try:
+#             psycopg2.connect(url).close()
+#             break
+#         except Exception:
+#             time.sleep(1)
+# PY
 
-echo "Aplicando migraciones..."
+# Migraciones automáticas
 python manage.py migrate --noinput
 
-# Repetimos por seguridad (idempotente)
-echo "Colectando estáticos..."
-python manage.py collectstatic --noinput
+# Puedes cargar fixtures iniciales si quieres (comenta si no aplica)
+# python manage.py loaddata initial_data.json || true
 
-echo "Arrancando: $*"
+# Ejecuta el comando que venga del CMD del Dockerfile
 exec "$@"
