@@ -124,11 +124,23 @@ jobs:
         run: |
           IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_sha }}"
           sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.template.json > Dockerrun.aws.json
-          zip -j app.zip Dockerrun.aws.json
-          # Si existen directorios de configuración, inclúyelos:
-          [ -d .ebextensions ] && zip -r app.zip .ebextensions
-          [ -d .platform ] && zip -r app.zip .platform
 
+          # Asegura tener zip (por si el runner cambia)
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y zip
+          fi
+
+          # Crea el paquete
+          zip -j app.zip Dockerrun.aws.json
+
+          # Adjunta directorios solo si existen (sin romper el paso)
+          if [ -d .ebextensions ]; then
+            zip -r app.zip .ebextensions
+          fi
+          if [ -d .platform ]; then
+            zip -r app.zip .platform
+          fi
+          
       - name: Upload to S3
         run: |
           KEY="deployments/${{ github.sha }}.zip"
