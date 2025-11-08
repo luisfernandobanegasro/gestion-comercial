@@ -55,6 +55,7 @@ jobs:
           REPO: ${{ env.ECR_REPOSITORY_BACKEND }}
           SHA_TAG: ${{ github.sha }}
         run: |
+          set -euo pipefail
           IMAGE_SHA="$REGISTRY/$REPO:$SHA_TAG"
           IMAGE_LATEST="$REGISTRY/$REPO:latest"
 
@@ -87,6 +88,7 @@ jobs:
 
       - name: Build Frontend
         run: |
+          set -euo pipefail
           cd frontend
           npm ci
           npm run build
@@ -119,30 +121,36 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Renderiza el Dockerrun v1 (single container) usando la imagen con tag SHA
+      - name: Verify EB app/env exist
+        env:
+          APP_NAME: ${{ secrets.EB_APP_NAME }}
+          ENV_NAME: ${{ secrets.EB_ENV_NAME }}
+        run: |
+          set -euo pipefail
+          echo "App: $APP_NAME"
+          echo "Env: $ENV_NAME"
+          echo "Available envs for this app:"
+          aws elasticbeanstalk describe-environments --application-name "$APP_NAME" \
+            --query 'Environments[].EnvironmentName' --output text
+
+      # Renderiza Dockerrun v1 apuntando a la imagen con tag SHA
       - name: Render Dockerrun.aws.json
         run: |
+          set -euo pipefail
           IMAGE_URI="${{ needs.deploy-backend.outputs.image_uri_sha }}"
           sed "s|REPLACE_WITH_ECR_IMAGE|$IMAGE_URI|g" Dockerrun.template.json > Dockerrun.aws.json
 
-          # Asegura tener zip (por si el runner cambia)
           if ! command -v zip >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y zip
           fi
 
-          # Crea el paquete
           zip -j app.zip Dockerrun.aws.json
+          if [ -d .ebextensions ]; then zip -r app.zip .ebextensions; fi
+          if [ -d .platform ]; then zip -r app.zip .platform; fi
 
-          # Adjunta directorios solo si existen (sin romper el paso)
-          if [ -d .ebextensions ]; then
-            zip -r app.zip .ebextensions
-          fi
-          if [ -d .platform ]; then
-            zip -r app.zip .platform
-          fi
-          
       - name: Upload to S3
         run: |
+          set -euo pipefail
           KEY="deployments/${{ github.sha }}.zip"
           aws s3 cp app.zip "s3://${{ secrets.EB_BUCKET }}/$KEY"
           echo "S3_KEY=$KEY" >> $GITHUB_ENV
@@ -154,6 +162,7 @@ jobs:
           S3_KEY: ${{ env.S3_KEY }}
           VERSION_LABEL: ${{ github.sha }}
         run: |
+          set -euo pipefail
           aws elasticbeanstalk create-application-version \
             --application-name "$APP_NAME" \
             --version-label "$VERSION_LABEL" \
@@ -165,6 +174,8 @@ jobs:
           ENV_NAME: ${{ secrets.EB_ENV_NAME }}
           VERSION_LABEL: ${{ github.sha }}
         run: |
+          set -euo pipefail
+          echo "Updating $ENV_NAME to $VERSION_LABEL"
           aws elasticbeanstalk update-environment \
             --environment-name "$ENV_NAME" \
             --version-label "$VERSION_LABEL"
@@ -173,4 +184,6 @@ jobs:
         env:
           ENV_NAME: ${{ secrets.EB_ENV_NAME }}
         run: |
+          set -euo pipefail
           aws elasticbeanstalk wait environment-updated --environment-names "$ENV_NAME"
+          echo "Environment updated."
