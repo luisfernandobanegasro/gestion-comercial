@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "corsheaders",
 
-    # Dominios
+    #otras apps
     "auditoria",
     "catalogo",
     "clientes",
