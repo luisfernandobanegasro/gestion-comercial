@@ -8,6 +8,9 @@ env:
   AWS_REGION: us-east-1
   # Repositorio ECR del backend
   ECR_REPOSITORY_BACKEND: smart-sales-365/backend
+  # Parámetros del frontend (puedes moverlos a secrets si prefieres)
+  FRONTEND_BUCKET: frontend-product-ef
+  CLOUDFRONT_DISTRIBUTION: E3UB71D49BVXGB
 
 permissions:
   contents: read
@@ -101,15 +104,21 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy to S3
-        run: aws s3 sync ./frontend/dist s3://frontend-product-ef --delete
+        run: |
+          set -euo pipefail
+          aws s3 sync ./frontend/dist "s3://${{ env.FRONTEND_BUCKET }}" --delete
 
       - name: Invalidate CloudFront
-        run: aws cloudfront create-invalidation --distribution-id E3UB71D49BVXGB --paths "/*"
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ env.CLOUDFRONT_DISTRIBUTION }}" \
+            --paths "/*"
 
   deploy-eb:
     name: Deploy to Elastic Beanstalk
     needs: [deploy-backend]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,6 +130,8 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Variables de EB como secrets:
+      #   EB_APP_NAME, EB_ENV_NAME, EB_BUCKET
       - name: Verify EB app/env exist
         env:
           APP_NAME: ${{ secrets.EB_APP_NAME }}
@@ -129,11 +140,20 @@ jobs:
           set -euo pipefail
           echo "App: $APP_NAME"
           echo "Env: $ENV_NAME"
-          echo "Available envs for this app:"
           aws elasticbeanstalk describe-environments --application-name "$APP_NAME" \
             --query 'Environments[].EnvironmentName' --output text
 
-      # Renderiza Dockerrun v1 apuntando a la imagen con tag SHA
+      - name: Ensure EB S3 bucket exists
+        env:
+          EB_BUCKET: ${{ secrets.EB_BUCKET }}
+        run: |
+          set -euo pipefail
+          if ! aws s3api head-bucket --bucket "$EB_BUCKET" 2>/dev/null; then
+            echo "Bucket $EB_BUCKET no existe. Creándolo…"
+            aws s3api create-bucket --bucket "$EB_BUCKET" --create-bucket-configuration LocationConstraint="${AWS_REGION}" || true
+          fi
+
+      # Render Dockerrun (imagen con tag SHA para deployments reproducibles)
       - name: Render Dockerrun.aws.json
         run: |
           set -euo pipefail
@@ -149,25 +169,38 @@ jobs:
           if [ -d .platform ]; then zip -r app.zip .platform; fi
 
       - name: Upload to S3
+        env:
+          EB_BUCKET: ${{ secrets.EB_BUCKET }}
         run: |
           set -euo pipefail
           KEY="deployments/${{ github.sha }}.zip"
-          aws s3 cp app.zip "s3://${{ secrets.EB_BUCKET }}/$KEY"
+          aws s3 cp app.zip "s3://${EB_BUCKET}/${KEY}"
           echo "S3_KEY=$KEY" >> $GITHUB_ENV
 
-      - name: Create EB Application Version
+      # Crear versión de aplicación de forma **idempotente**
+      - name: Create EB Application Version (idempotent)
         env:
           APP_NAME: ${{ secrets.EB_APP_NAME }}
-          S3_BUCKET: ${{ secrets.EB_BUCKET }}
+          EB_BUCKET: ${{ secrets.EB_BUCKET }}
           S3_KEY: ${{ env.S3_KEY }}
           VERSION_LABEL: ${{ github.sha }}
         run: |
           set -euo pipefail
-          aws elasticbeanstalk create-application-version \
+          EXISTS=$(aws elasticbeanstalk describe-application-versions \
             --application-name "$APP_NAME" \
-            --version-label "$VERSION_LABEL" \
-            --source-bundle S3Bucket="$S3_BUCKET",S3Key="$S3_KEY" \
-            --auto-create-application
+            --version-labels "$VERSION_LABEL" \
+            --query 'length(ApplicationVersions)' \
+            --output text)
+
+          if [ "$EXISTS" = "0" ]; then
+            echo "Creating version $VERSION_LABEL…"
+            aws elasticbeanstalk create-application-version \
+              --application-name "$APP_NAME" \
+              --version-label "$VERSION_LABEL" \
+              --source-bundle S3Bucket="$EB_BUCKET",S3Key="$S3_KEY"
+          else
+            echo "Version $VERSION_LABEL already exists. Reusing it."
+          fi
 
       - name: Update EB Environment
         env:
@@ -175,7 +208,7 @@ jobs:
           VERSION_LABEL: ${{ github.sha }}
         run: |
           set -euo pipefail
-          echo "Updating $ENV_NAME to $VERSION_LABEL"
+          echo "Updating environment $ENV_NAME to version $VERSION_LABEL"
           aws elasticbeanstalk update-environment \
             --environment-name "$ENV_NAME" \
             --version-label "$VERSION_LABEL"
