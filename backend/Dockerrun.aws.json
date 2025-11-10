@@ -1,23 +1,11 @@
 {
   "AWSEBDockerrunVersion": "1",
   "Image": {
-    "Name": "458329143192.dkr.ecr.us-east-1.amazonaws.com/smart-sales-365/backend:latest",
+    "Name": "REPLACE_WITH_ECR_IMAGE",
     "Update": "true"
   },
   "Ports": [
-    { "ContainerPort": "8000" }
-  ],
-  "Environment": [
-    { "Name": "DJANGO_SETTINGS_MODULE", "Value": "core.settings" },
-    { "Name": "PGHOST", "Value": "gestion-creditos.c6v4ym6y6pa3.us-east-1.rds.amazonaws.com" },
-    { "Name": "PGDATABASE", "Value": "entidad_financiera" },
-    { "Name": "PGUSER", "Value": "postgres" },
-    { "Name": "PGPASSWORD", "Value": "kirito2203" },
-    { "Name": "PGPORT", "Value": "5432" },
-    { "Name": "ALLOWED_HOSTS", "Value": "smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com,d1098mxiq3rtlj.cloudfront.net,localhost,127.0.0.1" },
-    { "Name": "CSRF_TRUSTED_ORIGINS", "Value": "https://smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com,https://d1098mxiq3rtlj.cloudfront.net" },
-    { "Name": "FRONTEND_URL", "Value": "https://d1098mxiq3rtlj.cloudfront.net" },
-    { "Name": "TIME_ZONE", "Value": "America/La_Paz" }
+    { "ContainerPort": 8000 }
   ],
   "Logging": "/var/log/app"
 }
