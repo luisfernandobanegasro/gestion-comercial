@@ -1,69 +1,51 @@
 #!/usr/bin/env bash
-# ==============================================
-# Smart-Sales-365 — entrypoint.sh (production)
-# ==============================================
-
 set -euo pipefail
 
 echo "🚀 Iniciando contenedor Smart-Sales-365..."
 echo "🧾 DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-<no-set>}"
-echo "🕒 TZ=${TIME_ZONE:-UTC}"
+echo "🕰️ TZ=${TZ:-<no-set>}"
 
-# --- Espera a que la DB (Postgres) esté lista ---
-echo "⏳ Esperando conexión con la base de datos..."
+# ---------- Espera a la base de datos ----------
 python - <<'PY'
-import os, sys, time
-import psycopg2
-from psycopg2 import OperationalError
+import os, time, sys
+from urllib.parse import urlparse
 
-host = os.getenv("PGHOST")
-name = os.getenv("PGDATABASE")
-user = os.getenv("PGUSER")
-pwd  = os.getenv("PGPASSWORD")
-port = os.getenv("PGPORT", "5432")
-
-if not all([host, name, user, pwd]):
-    print("❌ Variables de DB incompletas (PGHOST/PGDATABASE/PGUSER/PGPASSWORD).")
+try:
+    import psycopg2
+except Exception as e:
+    print("❌ Falta psycopg2 en el entorno. Asegúrate de tener 'psycopg2-binary' o 'psycopg2' en requirements.txt.")
     sys.exit(1)
 
-for i in range(30):  # ~90s
-    try:
-        psycopg2.connect(dbname=name, user=user, password=pwd, host=host, port=port, connect_timeout=3).close()
-        print("✅ Base de datos disponible.")
-        sys.exit(0)
-    except OperationalError as e:
-        print(f"⏱ Intento {i+1}/30: DB aún no responde... ({e.__class__.__name__})")
-        time.sleep(3)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    print("❌ DATABASE_URL no definido en variables de entorno."); sys.exit(1)
 
-print("❌ DB no disponible tras ~90s. Abortando.")
-sys.exit(1)
+p = urlparse(DATABASE_URL)
+for i in range(30):
+    try:
+        conn = psycopg2.connect(
+            dbname=p.path.lstrip('/'),
+            user=p.username, password=p.password,
+            host=p.hostname, port=p.port or 5432,
+            connect_timeout=3,
+        )
+        conn.close()
+        print("✅ Base de datos disponible.")
+        break
+    except Exception as e:
+        print(f"⏳ Intento {i+1}/30 esperando DB: {e}")
+        time.sleep(2)
+else:
+    print("❌ No se pudo conectar a la DB a tiempo."); sys.exit(1)
 PY
 
-# --- Migraciones ---
+# ---------- Migraciones y static ----------
 echo "📦 Aplicando migraciones..."
 python manage.py migrate --noinput
 
-# --- Colecta estáticos (si aplica) ---
-echo "🧹 Collectstatic (si corresponde)..."
-if python - <<'PY'
-import importlib, sys
-try:
-    importlib.import_module("django.contrib.staticfiles")
-    sys.exit(0)
-except ModuleNotFoundError:
-    sys.exit(1)
-PY
-then
-  python manage.py collectstatic --noinput
-else
-  echo "ℹ️ 'staticfiles' no está habilitado; se omite collectstatic."
-fi
+echo "🧹 Collectstatic (si corresponde)…"
+python manage.py collectstatic --noinput || true
 
-# --- Lanzar Gunicorn ---
-echo "🔥 Iniciando Gunicorn en 0.0.0.0:8000..."
-exec gunicorn core.wsgi:application \
-  --bind 0.0.0.0:8000 \
-  --workers 3 \
-  --timeout 120 \
-  --access-logfile - \
-  --error-logfile -
+# ---------- Arranque del proceso principal ----------
+echo "🔥 Lanzando proceso: $*"
+exec "$@"
