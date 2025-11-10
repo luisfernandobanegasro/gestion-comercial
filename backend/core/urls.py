@@ -4,6 +4,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from django.conf import settings
 from django.conf.urls.static import static
 from django.http import JsonResponse
+from .health import health_check
 
 def root_health(_):
     return JsonResponse({"service": "smart-sales-365-api", "status": "ok"})
@@ -26,6 +27,8 @@ urlpatterns = [
     # path("api/analitica/", include("analitica.urls")),
     path("api/auditoria/", include("auditoria.urls")),  # ← esta es la que te falla ahora
     # path("api/ia/", include("ia.urls")),
+
+    path("health/", health_check, name="health_check"),
 ]
 
 if settings.DEBUG:
