@@ -1,72 +1,69 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ==============================================
-# Smart-Sales-365 — entrypoint.sh
-# ==============================================
-# Este script se ejecuta al iniciar el contenedor
-# Hace migraciones, recolecta estáticos y arranca Gunicorn
+# Smart-Sales-365 — entrypoint.sh (production)
 # ==============================================
 
-set -e  # si algo falla, termina el proceso inmediatamente
+set -euo pipefail
 
 echo "🚀 Iniciando contenedor Smart-Sales-365..."
-echo "🧾 Entorno actual: ${DJANGO_SETTINGS_MODULE}"
+echo "🧾 DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-<no-set>}"
+echo "🕒 TZ=${TIME_ZONE:-UTC}"
 
-# Esperar un poco a que la base de datos esté lista
+# --- Espera a que la DB (Postgres) esté lista ---
 echo "⏳ Esperando conexión con la base de datos..."
-python <<'PYCODE'
-import time, psycopg2, os, sys
+python - <<'PY'
+import os, sys, time
+import psycopg2
 from psycopg2 import OperationalError
 
-db_host = os.getenv("PGHOST")
-db_name = os.getenv("PGDATABASE")
-db_user = os.getenv("PGUSER")
-db_pass = os.getenv("PGPASSWORD")
-db_port = os.getenv("PGPORT", "5432")
+host = os.getenv("PGHOST")
+name = os.getenv("PGDATABASE")
+user = os.getenv("PGUSER")
+pwd  = os.getenv("PGPASSWORD")
+port = os.getenv("PGPORT", "5432")
 
-for i in range(10):
+if not all([host, name, user, pwd]):
+    print("❌ Variables de DB incompletas (PGHOST/PGDATABASE/PGUSER/PGPASSWORD).")
+    sys.exit(1)
+
+for i in range(30):  # ~90s
     try:
-        psycopg2.connect(
-            dbname=db_name, user=db_user, password=db_pass,
-            host=db_host, port=db_port, connect_timeout=3
-        )
+        psycopg2.connect(dbname=name, user=user, password=pwd, host=host, port=port, connect_timeout=3).close()
         print("✅ Base de datos disponible.")
         sys.exit(0)
-    except OperationalError:
-        print(f"⏱ Intento {i+1}/10: aún no responde la base de datos...")
+    except OperationalError as e:
+        print(f"⏱ Intento {i+1}/30: DB aún no responde... ({e.__class__.__name__})")
         time.sleep(3)
-print("❌ Error: la base de datos no está disponible tras 30s.")
+
+print("❌ DB no disponible tras ~90s. Abortando.")
 sys.exit(1)
-PYCODE
+PY
 
-# Ejecutar migraciones
+# --- Migraciones ---
 echo "📦 Aplicando migraciones..."
-python manage.py migrate --noinput || {
-  echo "⚠️ Migraciones fallaron. Reintentando en modo seguro..."
-  python manage.py migrate --fake-initial
-}
+python manage.py migrate --noinput
 
-# Recolectar archivos estáticos
-echo "🧹 Recolectando archivos estáticos..."
-python manage.py collectstatic --noinput
+# --- Colecta estáticos (si aplica) ---
+echo "🧹 Collectstatic (si corresponde)..."
+if python - <<'PY'
+import importlib, sys
+try:
+    importlib.import_module("django.contrib.staticfiles")
+    sys.exit(0)
+except ModuleNotFoundError:
+    sys.exit(1)
+PY
+then
+  python manage.py collectstatic --noinput
+else
+  echo "ℹ️ 'staticfiles' no está habilitado; se omite collectstatic."
+fi
 
-# (Opcional) crear un superusuario automático si es necesario
-# echo "👤 Creando superusuario por defecto (si no existe)..."
-# python manage.py shell -c "
-# from django.contrib.auth import get_user_model;
-# User = get_user_model();
-# import os;
-# if not User.objects.filter(username=os.getenv('DJANGO_SUPERUSER_USERNAME','admin')).exists():
-#     User.objects.create_superuser(os.getenv('DJANGO_SUPERUSER_USERNAME','admin'),
-#                                   os.getenv('DJANGO_SUPERUSER_EMAIL','admin@example.com'),
-#                                   os.getenv('DJANGO_SUPERUSER_PASSWORD','admin123'))
-# "
-
-# Iniciar Gunicorn (servidor de aplicación WSGI)
-echo "🔥 Iniciando Gunicorn..."
+# --- Lanzar Gunicorn ---
+echo "🔥 Iniciando Gunicorn en 0.0.0.0:8000..."
 exec gunicorn core.wsgi:application \
-    --bind 0.0.0.0:8000 \
-    --workers 3 \
-    --timeout 120 \
-    --access-logfile - \
-    --error-logfile -
-
+  --bind 0.0.0.0:8000 \
+  --workers 3 \
+  --timeout 120 \
+  --access-logfile - \
+  --error-logfile -
