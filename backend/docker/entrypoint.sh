@@ -9,26 +9,49 @@ echo "🕰️ TZ=${TZ:-<no-set>}"
 python - <<'PY'
 import os, time, sys
 from urllib.parse import urlparse
-
 try:
     import psycopg2
-except Exception as e:
-    print("❌ Falta psycopg2 en el entorno. Asegúrate de tener 'psycopg2-binary' o 'psycopg2' en requirements.txt.")
+except Exception:
+    print("❌ Falta psycopg2. Asegúrate de tener 'psycopg2-binary' o 'psycopg2' en requirements.txt.")
     sys.exit(1)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    print("❌ DATABASE_URL no definido en variables de entorno."); sys.exit(1)
+db_url = os.environ.get("DATABASE_URL")
+params = {}
 
-p = urlparse(DATABASE_URL)
+if db_url:
+    # Soporta postgres:// o postgresql://
+    p = urlparse(db_url)
+    params = dict(
+        dbname=(p.path or "").lstrip("/") or os.environ.get("PGDATABASE"),
+        user=p.username or os.environ.get("PGUSER"),
+        password=p.password or os.environ.get("PGPASSWORD"),
+        host=p.hostname or os.environ.get("PGHOST"),
+        port=p.port or os.environ.get("PGPORT") or 5432,
+    )
+else:
+    # Modo PG* (sin DATABASE_URL)
+    params = dict(
+        dbname=os.environ.get("PGDATABASE"),
+        user=os.environ.get("PGUSER"),
+        password=os.environ.get("PGPASSWORD"),
+        host=os.environ.get("PGHOST"),
+        port=int(os.environ.get("PGPORT", "5432")),
+    )
+
+# Opcional: SSL
+sslmode = os.environ.get("DB_SSLMODE") or os.environ.get("PGSSLMODE")
+if sslmode:
+    params["sslmode"] = sslmode
+
+missing = [k for k,v in params.items() if v in (None,"")]
+if missing:
+    print(f"❌ Variables faltantes para conectar a Postgres: {missing}.")
+    print("   Define PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD (o usa DATABASE_URL).")
+    sys.exit(1)
+
 for i in range(30):
     try:
-        conn = psycopg2.connect(
-            dbname=p.path.lstrip('/'),
-            user=p.username, password=p.password,
-            host=p.hostname, port=p.port or 5432,
-            connect_timeout=3,
-        )
+        conn = psycopg2.connect(connect_timeout=3, **params)
         conn.close()
         print("✅ Base de datos disponible.")
         break
