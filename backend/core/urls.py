@@ -27,7 +27,7 @@ urlpatterns = [
     path("api/configuracion/", include("configuracion.urls")),
     path("api/analitica/", include("analitica.urls")),
     path("api/auditoria/", include("auditoria.urls")),
-    # path("api/ia/", include("ia.urls")),
+    # psath("api/ia/", include("ia.urls")),
 
     path("health/", health_check, name="health_check"),
 ]

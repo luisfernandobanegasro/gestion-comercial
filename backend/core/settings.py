@@ -214,22 +214,13 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
 MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = "/media/"   # 👈 SIEMPRE SOLO LA RUTA
 
-# Dominio del backend en producción (EB)
+# Dominio del backend en producción (EB) – solo para construir URLs absolutas si hace falta
 BACKEND_DOMAIN = os.getenv(
     "BACKEND_DOMAIN",
-    "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",  # dominio por defecto
+    "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
 )
-
-if DEBUG:
-    # En local, /media/ como siempre
-    MEDIA_URL = "/media/"
-else:
-    # En producción, URLs absolutas con HTTPS para evitar mixed content
-    MEDIA_URL = f"https://{BACKEND_DOMAIN}/media/"
-
-# WhiteNoise: compresión + hash de archivos estáticos
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # ================================
 # CORS / CSRF
