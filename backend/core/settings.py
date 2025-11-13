@@ -27,14 +27,25 @@ _env_hosts = [
     for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
     if h.strip()
 ]
-ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost", "0.0.0.0",
-                                       ".elasticbeanstalk.com", ".compute.amazonaws.com"]))
 
-# Detrás de ALB/ELB (X-Forwarded-Proto/Host). Esencial para que Django sepa su URL pública.
+ALLOWED_HOSTS = list(
+    set(
+        _env_hosts
+        + [
+            "127.0.0.1",
+            "localhost",
+            "0.0.0.0",
+            ".elasticbeanstalk.com",
+            ".compute.amazonaws.com",
+        ]
+    )
+)
+
+# Detrás de ALB/ELB (X-Forwarded-Proto/Host).
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# Forzar HTTPS en producción. El balanceador de carga debe tener un listener en el puerto 443.
+# Forzar HTTPS en producción.
 SECURE_SSL_REDIRECT = not DEBUG
 
 # Cookies endurecidas en producción
@@ -56,16 +67,19 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
+
+    # WhiteNoise debe ir ANTES de staticfiles
+    "whitenoise.runserver_nostatic",
+
     "django.contrib.staticfiles",
 
     # Terceros
-    "whitenoise.runserver_nostatic",  # sirve estáticos en dev/prod
     "rest_framework",
     "django_filters",
     "drf_spectacular",
-    "corsheaders",   
+    "corsheaders",
 
-    #otras apps
+    # Otras apps
     "auditoria",
     "catalogo",
     "clientes",
@@ -108,8 +122,7 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        # Si algún día sirves el build de Vite desde Django:
-        # "DIRS": [FRONTEND_DIR / "dist"],
+        # "DIRS": [FRONTEND_DIR / "dist"],  # si algún día sirves el front desde Django
         "DIRS": [],
         "APP_DIRS": True,
         "OPTIONS": {
@@ -136,7 +149,6 @@ DATABASES = {
         "PASSWORD": os.getenv("PGPASSWORD", ""),
         "HOST": os.getenv("PGHOST", "127.0.0.1"),
         "PORT": os.getenv("PGPORT", "5432"),
-        # Para RDS con SSL:
         # "OPTIONS": {"sslmode": os.getenv("DB_SSLMODE", "prefer")},
     }
 }
@@ -152,10 +164,10 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
     "DEFAULT_THROTTLE_CLASSES": [
-      "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "1000/min"  # ajusta
+        "user": "1000/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
@@ -198,17 +210,25 @@ USE_TZ = True
 # ================================
 # Static & Media (WhiteNoise)
 # ================================
-
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
 MEDIA_ROOT = BASE_DIR / "media"
 
+# Dominio del backend en producción (EB)
+BACKEND_DOMAIN = os.getenv(
+    "BACKEND_DOMAIN",
+    "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",  # dominio por defecto
+)
+
 if DEBUG:
+    # En local, /media/ como siempre
     MEDIA_URL = "/media/"
 else:
-    MEDIA_URL = f"https://{os.getenv('BACKEND_DOMAIN')}/media/"
+    # En producción, URLs absolutas con HTTPS para evitar mixed content
+    MEDIA_URL = f"https://{BACKEND_DOMAIN}/media/"
 
+# WhiteNoise: compresión + hash de archivos estáticos
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # ================================
@@ -226,16 +246,21 @@ EXTRA_FRONTEND = [
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
-CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND)
+CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
+    DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND
+)
 CORS_ALLOW_CREDENTIALS = True
 
 _csrf_from_cors = [
-    o if o.startswith("http") else f"https://{o}" for o in (CORS_ALLOWED_ORIGINS or [])
+    o if o.startswith("http") else f"https://{o}"
+    for o in (CORS_ALLOWED_ORIGINS or [])
 ]
 _csrf_from_hosts = [
     f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
-CSRF_TRUSTED_ORIGINS = list(set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"]))
+CSRF_TRUSTED_ORIGINS = list(
+    set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"])
+)
 
 # ================================
 # Email y Logging
