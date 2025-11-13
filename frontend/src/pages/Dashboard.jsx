@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../api/axios.js'
-import { ResponsiveContainer, BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, PieChart, Pie, Cell, Legend } from 'recharts'
+import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Line, PieChart, Pie, Cell, Legend } from 'recharts'
 import { DollarSign, ShoppingCart, UserPlus, Ticket } from 'lucide-react'
 
 const COLORS = ['#0ea5e9', '#6366f1', '#ec4899', '#f97316', '#10b981'];
@@ -25,12 +25,18 @@ function KpiCard({ title, value, icon, prefix = '' }) {
 export default function Dashboard(){
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [predictions, setPredictions] = useState([]);
 
   useEffect(()=>{
     const fetchData = async()=>{
       try{
-        const response = await api.get('/reportes/dashboard/');
-        setData(response.data);
+        // Pedimos los datos históricos y las predicciones en paralelo
+        const [dashboardRes, predictionsRes] = await Promise.all([
+          api.get('/reportes/dashboard/'),
+          api.get('/analitica/predicciones/ventas/')
+        ]);
+        setData(dashboardRes.data);
+        setPredictions(predictionsRes.data);
       } catch(error) {
         console.error("Error al cargar los datos del dashboard", error);
       } finally {
@@ -39,6 +45,16 @@ export default function Dashboard(){
     }
     fetchData()
   },[])
+
+  // Combinamos datos históricos y de predicción para el gráfico principal
+  const combinedChartData = (data?.ventas_ultimos_30_dias || []).map(item => ({
+    ...item,
+    type: 'historico'
+  })).concat(predictions.map(pred => ({
+    fecha: pred.fecha,
+    total: pred.prediccion,
+    type: 'prediccion'
+  })));
 
   if (loading) return <div className="card">Cargando dashboard...</div>;
   if (!data) return <div className="card">No se pudieron cargar los datos del dashboard.</div>;
@@ -56,16 +72,18 @@ export default function Dashboard(){
       {/* Fila de Gráficos */}
       <div className="grid grid-2">
         <div className="card">
-          <h3>Ventas (Últimos 30 días)</h3>
+          <h3>Ventas y Predicciones (Próximos 30 días)</h3>
           <div style={{width:'100%', height:280}}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data.ventas_ultimos_30_dias}>
+              <ComposedChart data={combinedChartData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="fecha" tickFormatter={(date) => new Date(date).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit' })} />
                 <YAxis />
                 <Tooltip formatter={(value) => `Bs. ${value.toLocaleString()}`} />
-                <Bar dataKey="total" fill="var(--brand)" />
-              </BarChart>
+                <Legend />
+                <Bar dataKey="total" name="Venta Histórica" fill="var(--brand)" />
+                <Line type="monotone" dataKey="total" name="Predicción" stroke="#ec4899" strokeDasharray="5 5" dot={false} />
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>

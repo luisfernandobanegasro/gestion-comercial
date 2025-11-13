@@ -1,0 +1,1241 @@
+================================================================================
+Archivo: reportes/views.py
+================================================================================
+
+# reportes/views.py
+import re
+from rest_framework import views, permissions
+from rest_framework.response import Response
+from rest_framework.decorators import api_view, permission_classes
+from django.http import HttpResponse
+
+from cuentas.permissions import RequierePermisos
+from catalogo.models import Producto
+from .runner import run_prompt
+from .services import generar_excel, generar_pdf, get_dashboard_data
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated, RequierePermisos])
+def dashboard_data_view(request):
+    data = get_dashboard_data()
+    return Response(data)
+
+
+class ReportePromptView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    required_perms = ["reportes.generar"]  # por defecto: ver
+
+    def get_permissions(self):
+        # Exportar requiere permiso distinto
+        self.required_perms = ["reportes.generar"]
+        try:
+            if self.request.method == "POST":
+                prompt = (self.request.data.get("prompt") or "").lower()
+                if "pdf" in prompt or "excel" in prompt or "xlsx" in prompt:
+                    self.required_perms = ["reportes.exportar"]
+        except Exception:
+            pass
+        return [p() for p in self.permission_classes]
+
+    def post(self, request):
+        prompt = request.data.get("prompt") or ""
+
+        # --- INTENCIÓN: agregar al carrito (detección inmediata, robusta) ---
+        if re.search(r"\b(carrito|compra|pedido)\b", prompt.lower()):
+            m = re.search(r"(?:agrega|añade|pon|mete|quiero)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)", prompt.lower())
+            if m:
+                cantidad = int(m.group(1) or 1)
+                nombre = m.group(2).strip()
+                prod = Producto.objects.filter(nombre__icontains=nombre, activo=True).first()
+                if not prod:
+                    return Response({"error": f"Producto '{nombre}' no encontrado."}, status=404)
+                # En tus modelos: Producto.precio (no existe precio_final)
+                return Response({
+                    "intent": "agregar_carrito",
+                    "producto": {"id": prod.id, "nombre": prod.nombre, "precio": float(prod.precio)},
+                    "cantidad": cantidad
+                })
+
+        # --- Interpretar y ejecutar reporte con el motor robusto ---
+        result = run_prompt(prompt)
+        # Compatibilidad: run_prompt ahora devuelve (spec_dict, headers, rows, warnings)
+        if isinstance(result, dict):
+            # Caso parse_only (no debería entrar aquí)
+            spec, headers, rows, warnings = result, [], [], []
+        else:
+            spec, headers, rows, warnings = result
+
+        formato = spec.get("format", "pantalla")
+
+        # Sugerencias UX si faltó info (fechas/agrupación)
+        hints = []
+        if not spec.get("start_date") or not spec.get("end_date"):
+            hints.append("No detecté rango de fechas. Usé últimos 30 días. Puedes decir: 'del 01/09/2025 al 30/09/2025' o 'este mes'.")
+        if not spec.get("dimensions"):
+            hints.append("No detecté agrupación. Prueba: 'por producto', 'por cliente', 'por mes' o varias: 'por cliente y mes'.")
+
+        # --- Salidas ---
+        if formato == "excel":
+            xls = generar_excel(headers, rows)
+            resp = HttpResponse(
+                xls,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            resp["Content-Disposition"] = 'attachment; filename="reporte.xlsx"'
+            return resp
+
+        if formato == "pdf":
+            meta = {
+                "start_date": spec.get("start_date"),
+                "end_date": spec.get("end_date"),
+                "group_by": spec.get("dimensions"),
+                "metrics": spec.get("metrics"),
+                "intent": spec.get("intent"),
+            }
+            pdf = generar_pdf(headers, rows, meta)
+            resp = HttpResponse(pdf, content_type="application/pdf")
+            resp["Content-Disposition"] = 'attachment; filename="reporte.pdf"'
+            return resp
+
+        # Preview en pantalla
+        return Response({
+            "headers": headers,
+            "rows": rows,
+            "meta": spec,
+            "warnings": warnings,
+            "hints": hints
+        })
+
+
+================================================================================
+Archivo: reportes/parser.py
+================================================================================
+
+# reportes/parser.py
+import os, re
+from datetime import datetime
+from typing import Dict, Any
+from django.conf import settings
+try:
+    import joblib
+except Exception:
+    joblib = None
+
+SPANISH_MONTHS = {
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
+    "noviembre":11,"diciembre":12
+}
+
+_MODEL = None
+def _load_model():
+    global _MODEL
+    if _MODEL is not None: return _MODEL
+    if not joblib: return None
+    path = os.path.join(settings.BASE_DIR, "ia", "prompt_intent_model.joblib")
+    if os.path.exists(path):
+        try: _MODEL = joblib.load(path)
+        except Exception: _MODEL = None
+    return _MODEL
+
+def _norm_fecha(s: str) -> str:
+    if "/" in s:
+        d, m, y = s.split("/")
+        return f"{y}-{m}-{d}"
+    return s
+
+def _ultimo_dia_mes(mes: int, year: int) -> int:
+    if mes in (1,3,5,7,8,10,12): return 31
+    if mes == 2: return 29
+    return 30
+
+def parse_prompt(prompt: str) -> Dict[str, Any]:
+    p = (prompt or "").lower().strip()
+    out: Dict[str, Any] = {
+        "intent": "ventas",
+        "group_by": "producto",
+        "start_date": None,
+        "end_date": None,
+        "format": "pantalla",
+        "limit": None,
+        "threshold": None,
+        "categoria": None,
+        "marca": None,
+        "contiene": None,
+    }
+    # ---- Nueva intención para el carrito ----
+    if re.search(r"\b(agrega|añade|quiero|pon|mete)\b", p) and re.search(r"\b(carrito|compra|pedido)\b", p):
+        out["intent"] = "agregar_carrito"
+        # Extraer cantidad y nombre del producto
+        m_prod = re.search(r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)", p)
+        if m_prod:
+            out["limit"] = int(m_prod.group(1) or 1)  # Cantidad (limit)
+            out["contiene"] = m_prod.group(2).strip() # Nombre (contiene)
+        return out # Devolvemos inmediatamente para no confundir con reportes
+
+    # ---- 1. Intento con IA (si el modelo existe) ----
+    model = _load_model()
+    if model is not None:
+        try:
+            proba = model.predict_proba([p])[0]
+            labels = model.classes_
+            top_i = int(proba.argmax())
+            # Si el modelo está razonablemente seguro, usamos su predicción.
+            if proba[top_i] >= 0.60:
+                out["intent"] = labels[top_i]
+        except Exception:
+            pass
+
+    # ---- 2. Reglas de intención (si la IA no asignó una o para refinar) ----
+    if re.search(r"\b(precio|precios|lista de precios)\b", p):
+        out["intent"] = "precios"
+
+    elif (
+        re.search(r"\b(stock|inventario|existenc)\b", p)          # menciona stock/inventario
+        or re.search(r"\bmenor stock\b", p)                       # "menor stock"
+        or re.search(r"\bstock menor\b", p)                       # "stock menor"
+    ):
+        # Si habla de stock, por defecto 'stock', y si además sugiere bajo/menor/reponer -> 'stock_bajo'
+        out["intent"] = "stock"
+        if re.search(r"\b(poco stock|bajo stock|reponer|renovar|menor stock|stock menor)\b", p):
+            out["intent"] = "stock_bajo"
+
+    elif re.search(r"\b(m[aá]s vendido|top|ranking)\b", p):
+        out["intent"] = "top_productos"
+
+    elif re.search(r"\b(sin venta|no se vendi[oó]|sin movimiento)\b", p):
+        out["intent"] = "sin_movimiento"
+
+    elif out.get("intent") is None: # Si ni la IA ni las reglas anteriores funcionaron
+        out["intent"] = "ventas"
+
+    # ---- Fechas ----
+    r = re.search(r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+    if r:
+        out["start_date"] = _norm_fecha(r.group(1))
+        out["end_date"]   = _norm_fecha(r.group(2))
+    else:
+        fechas = re.findall(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+        if len(fechas) >= 1:
+            out["start_date"] = _norm_fecha(fechas[0])
+        if len(fechas) >= 2:
+            out["end_date"] = _norm_fecha(fechas[1])
+        if not out["start_date"] and ("mes de " in p or "mensual" in p):
+            m = re.search(r"mes de ([a-zñ]+)", p)
+            if m:
+                month_name = m.group(1)
+                mes = SPANISH_MONTHS.get(month_name)
+                if mes:
+                    year = datetime.now().year
+                    out["start_date"] = f"{year}-{mes:02d}-01"
+                    out["end_date"]   = f"{year}-{mes:02d}-{_ultimo_dia_mes(mes, year):02d}"
+
+    # ---- Formato ----
+    if "pdf" in p:
+        out["format"] = "pdf"
+    elif "excel" in p or "xlsx" in p:
+        out["format"] = "excel"
+    else:
+        out["format"] = "pantalla"
+
+    # ---- Limit (dos patrones) ----
+    # 1) "top 3"
+    mtop = re.search(r"\btop\s+(\d{1,3})\b", p)
+    if mtop:
+        out["limit"] = int(mtop.group(1))
+    # 2) "los 3 productos ..." | "3 productos ..." → lo usamos como limit
+    if out["limit"] is None:
+        mcount = re.search(r"\b(?:los\s+)?(\d{1,3})\s+(?:productos?|items?)\b", p)
+        if mcount:
+            out["limit"] = int(mcount.group(1))
+
+    # ---- Threshold ----
+    mth = re.search(r"(menor(?:\s*a)?|<)\s*(\d{1,6})", p)
+    if mth:
+        out["threshold"] = int(mth.group(2))
+
+    # ---- Filtros ----
+    mc = re.search(r"categor[ií]a\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mc: out["categoria"] = mc.group(1).strip()
+
+    mm = re.search(r"marca\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mm: out["marca"] = mm.group(1).strip()
+
+    mn = re.search(r"(que contenga|contiene|con nombre)\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mn: out["contiene"] = mn.group(2).strip()
+
+    return out
+
+
+================================================================================
+Archivo: reportes/runner.py
+================================================================================
+
+# reportes/runner.py
+from typing import Tuple, List, Dict, Any
+from .intent_parser import parse_prompt_to_spec
+from .query_builder import build_queryset
+from .queries_extra import productos_sin_movimiento
+from .services import (
+    consultar_stock, consultar_stock_bajo, consultar_precios
+)
+
+# Helper: Spec(dataclass) -> dict (para mantener compatibilidad con tu view)
+def _spec_to_dict(spec) -> Dict[str, Any]:
+    return {
+        "intent": spec.intent,
+        "metrics": list(spec.metrics or []),
+        "dimensions": list(spec.dimensions or []),
+        "start_date": spec.start_date,
+        "end_date": spec.end_date,
+        "filters": [f.__dict__ for f in (spec.filters or [])],
+        "order_by": spec.order_by,
+        "order_dir": spec.order_dir,
+        "limit": spec.limit,
+        "format": spec.format,
+    }
+
+def run_prompt(prompt: str, parse_only: bool = False) -> Tuple[Dict[str, Any], List[str], List[List], List[str]]:
+    """
+    Traduce el prompt → Spec robusta y ejecuta la consulta segura.
+    Devuelve: (spec_dict, headers, rows, warnings)
+    """
+    spec, warnings = parse_prompt_to_spec(prompt)
+
+    if parse_only:
+        return _spec_to_dict(spec)
+
+    # Intenciones no-ventas (delegamos a tus services existentes)
+    if spec.intent == "stock":
+        headers, rows = consultar_stock(
+            # filtros posibles en el DSL:
+            next((f.value for f in spec.filters if f.field == "categoria"), None),
+            next((f.value for f in spec.filters if f.field == "marca"), None),
+            next((f.value for f in spec.filters if f.field == "producto"), None),
+        )
+    elif spec.intent == "stock_bajo":
+        threshold = None
+        for f in spec.filters:
+            if f.field in ("stock", "cantidad") and f.op in ("lt", "lte"):
+                threshold = f.value
+        headers, rows = consultar_stock_bajo(
+            threshold,
+            next((f.value for f in spec.filters if f.field == "categoria"), None),
+            spec.limit,
+        )
+    elif spec.intent == "precios":
+        headers, rows = consultar_precios(
+            next((f.value for f in spec.filters if f.field == "categoria"), None),
+            next((f.value for f in spec.filters if f.field == "marca"), None),
+            next((f.value for f in spec.filters if f.field == "producto"), None),
+        )
+    elif spec.intent == "sin_movimiento":
+        headers, rows = productos_sin_movimiento(
+            spec.start_date,
+            spec.end_date,
+            next((f.value for f in spec.filters if f.field == "categoria"), None),
+        )
+    else:
+        # "ventas", "top", y cualquier consulta con métricas/dimensiones
+        headers, rows = build_queryset(spec)
+
+    return _spec_to_dict(spec), headers, rows, warnings
+
+
+================================================================================
+Archivo: reportes/services.py
+================================================================================
+
+# reportes/services.py
+from io import BytesIO
+from typing import Tuple, Dict, Any, List
+
+from django.utils import timezone
+from datetime import timedelta
+from django.db.models import Sum, F, Avg
+from django.db.models.functions import TruncDay, TruncMonth
+
+# Modelos
+from ventas.models import Venta, ItemVenta
+from clientes.models import Cliente
+from catalogo.models import Producto  # ajusta si tu modelo está en otra app o se llama distinto
+
+# Excel
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, numbers, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
+# PDF (ReportLab/Platypus)
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+
+# =========================
+# Consultas por intención
+# =========================
+
+def consultar_ventas(start_date: str | None, end_date: str | None, group_by: str) -> Tuple[List[str], List[List]]:
+    qs = ItemVenta.objects.select_related("venta", "producto", "venta__cliente", "producto__categoria")
+
+    if start_date:
+        qs = qs.filter(venta__creado_en__date__gte=start_date)
+    if end_date:
+        qs = qs.filter(venta__creado_en__date__lte=end_date)
+
+    qs = qs.filter(venta__estado__in=["pagada"])  # ventas cerradas
+
+    rows: List[List] = []
+    headers: List[str] = []
+
+    if group_by == "producto":
+        agg = (qs.values(n=F("producto__nombre"))
+                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+                 .order_by("-monto", "-cantidad", "n"))
+        headers = ["Producto","Cantidad total","Monto total"]
+        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+
+    elif group_by == "cliente":
+        agg = (qs.values(n=F("venta__cliente__nombre"))
+                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+                 .order_by("-monto", "-cantidad", "n"))
+        headers = ["Cliente","Cantidad total","Monto total"]
+        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+
+    elif group_by == "categoria":
+        agg = (qs.values(n=F("producto__categoria__nombre"))
+                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+                 .order_by("-monto", "-cantidad", "n"))
+        headers = ["Categoría","Cantidad total","Monto total"]
+        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+
+    elif group_by == "mes":
+        agg = (
+            qs.annotate(period=TruncMonth("venta__creado_en"))
+              .values("period")
+              .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+              .order_by("period")
+        )
+        headers = ["Mes (YYYY-MM)", "Cantidad total", "Monto total"]
+        rows = [[r["period"].strftime("%Y-%m"), int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+
+    return headers, rows
+
+
+def consultar_stock(categoria: str | None = None, marca: str | None = None, contiene: str | None = None):
+    qs = Producto.objects.select_related("categoria")
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+    if marca and hasattr(Producto, "marca"):
+        qs = qs.filter(marca__nombre__icontains=marca)
+    if contiene:
+        qs = qs.filter(nombre__icontains=contiene)
+
+    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Precio"]
+    rows = []
+    for p in qs.order_by("nombre"):
+        rows.append([
+            p.nombre,
+            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
+            getattr(p, "stock", 0),
+            getattr(p, "stock_minimo", 0),
+            float(getattr(p, "precio", 0.0)),
+        ])
+    return headers, rows
+
+
+def consultar_stock_bajo(
+    threshold: int | None = None,
+    categoria: str | None = None,
+    limit: int | None = None
+):
+    """
+    Devuelve productos con bajo stock.
+    Si threshold se especifica, usa stock < threshold.
+    Si no, usa stock < stock_minimo (si existe).
+    """
+    qs = Producto.objects.select_related("categoria")
+
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+
+    # --- Filtro principal ---
+    if threshold is not None:
+        qs = qs.filter(stock__lt=threshold)
+    elif hasattr(Producto, "stock_minimo"):
+        qs = qs.filter(stock__lt=F("stock_minimo"))
+    else:
+        qs = qs.filter(stock__lt=10)  # fallback
+
+    # --- Orden y límite ---
+    qs = qs.order_by("stock", "nombre")
+    if limit:
+        qs = qs[:limit]
+
+    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Sugerencia"]
+    rows = []
+    for p in qs:
+        minimo = getattr(p, "stock_minimo", None)
+        sug = f"Reponer hasta {minimo}" if minimo else "Reponer"
+        rows.append([
+            p.nombre,
+            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
+            getattr(p, "stock", 0),
+            minimo if minimo is not None else "-",
+            sug
+        ])
+    return headers, rows
+
+
+def consultar_precios(categoria: str | None = None, marca: str | None = None, contiene: str | None = None):
+    qs = Producto.objects.select_related("categoria")
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+    if marca and hasattr(Producto, "marca"):
+        qs = qs.filter(marca__nombre__icontains=marca)
+    if contiene:
+        qs = qs.filter(nombre__icontains=contiene)
+
+    headers = ["Producto", "Categoría", "Precio", "Stock"]
+    rows = []
+    for p in qs.order_by("nombre"):
+        rows.append([
+            p.nombre,
+            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
+            float(getattr(p, "precio", 0.0)),
+            getattr(p, "stock", 0),
+        ])
+    return headers, rows
+
+
+def consultar_top_productos(start_date: str | None, end_date: str | None, limit: int | None, categoria: str | None = None):
+    qs = ItemVenta.objects.select_related("venta", "producto", "producto__categoria")
+    if start_date:
+        qs = qs.filter(venta__creado_en__date__gte=start_date)
+    if end_date:
+        qs = qs.filter(venta__creado_en__date__lte=end_date)
+    qs = qs.filter(venta__estado__in=["pagada"])
+    if categoria:
+        qs = qs.filter(producto__categoria__nombre__icontains=categoria)
+
+    agg = (qs.values(n=F("producto__nombre"))
+             .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+             .order_by("-cantidad", "-monto", "n"))
+    if limit:
+        agg = agg[:limit]
+
+    headers = ["Producto", "Cantidad vendida", "Monto total"]
+    rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+    return headers, rows
+
+
+def consultar_sin_movimiento(start_date: str | None, end_date: str | None, categoria: str | None = None):
+    vendibles = ItemVenta.objects.select_related("venta", "producto")
+    if start_date:
+        vendibles = vendibles.filter(venta__creado_en__date__gte=start_date)
+    if end_date:
+        vendibles = vendibles.filter(venta__creado_en__date__lte=end_date)
+    vendibles = vendibles.values_list("producto_id", flat=True).distinct()
+
+    qs = Producto.objects.exclude(id__in=vendibles).select_related("categoria")
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+
+    headers = ["Producto", "Categoría", "Stock", "Precio", "Observación"]
+    rows = []
+    for p in qs.order_by("nombre"):
+        rows.append([
+            p.nombre,
+            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
+            getattr(p, "stock", 0),
+            float(getattr(p, "precio", 0.0)),
+            "Sin ventas en el período"
+        ])
+    return headers, rows
+
+
+# =========================
+# Exportadores
+# =========================
+
+def generar_excel(headers: List[str], rows: List[List]) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reporte"
+
+    # Encabezado
+    ws.append(headers)
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    header_ink = Font(bold=True, color="FFFFFF")
+    for col_idx, _ in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_ink
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Filas
+    for r in rows:
+        ws.append(r)
+
+    # Congelar encabezado
+    ws.freeze_panes = "A2"
+
+    # Formatos numéricos
+    if headers and "monto" in headers[-1].lower():
+        for row_idx in range(2, ws.max_row + 1):
+            c = ws.cell(row=row_idx, column=len(headers))
+            try:
+                float(c.value)
+                c.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+                c.alignment = Alignment(horizontal="right")
+            except Exception:
+                pass
+
+    for idx, h in enumerate(headers, start=1):
+        if "cantidad" in h.lower():
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row=row_idx, column=idx).alignment = Alignment(horizontal="center")
+
+    # Bordes
+    thin = Side(style="thin", color="DDDDDD")
+    border = Border(top=thin, left=thin, right=thin, bottom=thin)
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=len(headers)):
+        for cell in row:
+            cell.border = border
+
+    # Auto-ancho
+    for col_idx in range(1, len(headers) + 1):
+        max_len = 0
+        for row_idx in range(1, ws.max_row + 1):
+            val = ws.cell(row=row_idx, column=col_idx).value
+            if val is None:
+                continue
+            max_len = max(max_len, len(str(val)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(12, max_len + 2), 42)
+
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def generar_pdf(headers: List[str], rows: List[List], meta: Dict[str, Any]) -> bytes:
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=2*cm, rightMargin=2*cm,
+        topMargin=1.8*cm, bottomMargin=1.8*cm
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        name="Title",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=20,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=10,
+    )
+    meta_style = ParagraphStyle(
+        name="Meta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        textColor=colors.HexColor("#64748b"),
+        spaceAfter=8,
+    )
+
+    elems = []
+    elems.append(Paragraph("Reporte", title_style))
+    rango = f"Rango: {meta.get('start_date') or '-'} a {meta.get('end_date') or '-'}"
+    detalles = []
+    if meta.get("group_by"):
+        detalles.append(f"Grupo: {meta.get('group_by')}")
+    if meta.get("intent"):
+        detalles.append(f"Intent: {meta.get('intent')}")
+    sub = f"{rango}" + (f" | {' | '.join(detalles)}" if detalles else "")
+    elems.append(Paragraph(sub, meta_style))
+    elems.append(Spacer(1, 6))
+
+    data = []
+    if headers:
+        data.append(headers)
+    data.extend(rows or [])
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0f172a")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 10),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ("BOTTOMPADDING", (0,0), (-1,0), 8),
+
+        ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
+        ("FONTSIZE", (0,1), (-1,-1), 9),
+        ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#e5e7eb")),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+    ]))
+
+    # Alinea última columna si parece ser monto/total
+    if headers and any(k in headers[-1].lower() for k in ("monto", "total", "precio")):
+        table.setStyle(TableStyle([("ALIGN", (-1,1), (-1,-1), "RIGHT")]))
+
+    elems.append(table)
+    doc.build(elems)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+# =========================
+# Datos para Dashboard
+# =========================
+
+def get_dashboard_data():
+    now = timezone.now()
+    today = now.date()
+    start_of_month = today.replace(day=1)
+    start_of_30_days = today - timedelta(days=30)
+
+    ventas_pagadas = Venta.objects.filter(estado="pagada")
+
+    ventas_hoy = ventas_pagadas.filter(creado_en__date=today).aggregate(total=Sum("total"))["total"] or 0
+    ventas_mes = ventas_pagadas.filter(creado_en__gte=start_of_month).aggregate(total=Sum("total"))["total"] or 0
+    ticket_promedio = ventas_pagadas.filter(creado_en__gte=start_of_month).aggregate(avg=Avg("total"))["avg"] or 0
+    nuevos_clientes_mes = Cliente.objects.filter(creado_en__gte=start_of_month).count()
+
+    ventas_diarias = (
+        ventas_pagadas.filter(creado_en__gte=start_of_30_days)
+        .annotate(dia=TruncDay("creado_en"))
+        .values("dia")
+        .annotate(total=Sum("total"))
+        .order_by("dia")
+    )
+
+    ventas_por_categoria = (
+        ventas_pagadas.filter(creado_en__gte=start_of_month)
+        .values("items__producto__categoria__nombre")
+        .annotate(total=Sum("items__subtotal"))
+        .order_by("-total")
+    )
+
+    ultimas_ventas = ventas_pagadas.order_by("-creado_en")[:5].select_related("cliente")
+
+    return {
+        "kpis": {
+            "ventas_hoy": f"{ventas_hoy:,.2f}",
+            "ventas_mes_actual": f"{ventas_mes:,.2f}",
+            "nuevos_clientes_mes": nuevos_clientes_mes,
+            "ticket_promedio": f"{ticket_promedio:,.2f}",
+        },
+        "ventas_ultimos_30_dias": [
+            {"fecha": item["dia"].strftime("%Y-%m-%d"), "total": float(item["total"])}
+            for item in ventas_diarias
+        ],
+        "ventas_por_categoria": [
+            {"categoria": item["items__producto__categoria__nombre"], "total": float(item["total"])}
+            for item in ventas_por_categoria if item["items__producto__categoria__nombre"]
+        ],
+        "ultimas_ventas": [
+            {
+                "id": v.id,
+                "folio": v.folio,
+                "cliente": v.cliente.nombre if v.cliente else "N/A",
+                "total": f"{v.total:,.2f}",
+                "fecha": v.creado_en.strftime("%Y-%m-%d %H:%M"),
+            }
+            for v in ultimas_ventas
+        ],
+    }
+
+
+================================================================================
+Archivo: reportes/urls.py
+================================================================================
+
+from django.urls import path
+from .views import ReportePromptView, dashboard_data_view
+
+urlpatterns = [
+    path("prompt/", ReportePromptView.as_view(), name="reporte_prompt"),
+    # Nueva ruta para los datos del dashboard
+    path("dashboard/", dashboard_data_view, name="dashboard_data"),
+]
+
+
+================================================================================
+Archivo: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyia/train_intents.py
+================================================================================
+
+*** ERROR: Archivo no encontrado en la ruta: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyia/train_intents.py ***
+
+================================================================================
+Archivo: ia/train_predictions.py
+================================================================================
+
+# ia/train_predictions.py
+import os
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import joblib
+from datetime import timedelta
+
+from django.conf import settings
+from django.db import models
+from ventas.models import Venta
+
+
+def get_sales_data():
+    """
+    Obtiene los datos de ventas diarias de la base deatos y los prepara para el modelo.
+    """
+    # Obtenemos ventas pagadas, agrupadas por día
+    sales = (
+        Venta.objects.filter(estado="pagada")
+        .values("creado_en__date")
+        .annotate(total_ventas=models.Sum("total"))
+        .order_by("creado_en__date")
+    )
+
+    if not sales:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(list(sales))
+    df = df.rename(columns={"creado_en__date": "fecha", "total_ventas": "ventas"})
+    df["fecha"] = pd.to_datetime(df["fecha"])
+    df = df.set_index("fecha")
+
+    # Asegurarnos de que tenemos un rango de fechas continuo, rellenando días sin ventas con 0
+    df = df.asfreq('D', fill_value=0)
+    return df
+
+
+def create_features(df):
+    """
+    Crea características (features) a partir de la fecha para el modelo.
+    """
+    df['dia_semana'] = df.index.dayofweek  # Lunes=0, Domingo=6
+    df['dia_mes'] = df.index.day
+    df['mes'] = df.index.month
+    df['anio'] = df.index.year
+    df['semana_anio'] = df.index.isocalendar().week.astype(int)
+    return df
+
+
+def train_model():
+    """
+    Función principal que carga datos, entrena el modelo y lo guarda.
+    """
+    print("Iniciando entrenamiento del modelo de predicción de ventas...")
+    df = get_sales_data()
+
+    # Si no hay datos, no podemos entrenar
+    if df.shape[0] < 30:
+        print("No hay suficientes datos históricos (< 30 días). No se entrenará el modelo.")
+        return None
+
+    df = create_features(df)
+
+    FEATURES = ['dia_semana', 'dia_mes', 'mes', 'anio', 'semana_anio']
+    TARGET = 'ventas'
+
+    X = df[FEATURES]
+    y = df[TARGET]
+
+    # Dividimos los datos para una validación simple
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=False)
+
+    # Modelo: RandomForestRegressor
+    model = RandomForestRegressor(n_estimators=100, random_state=42, min_samples_leaf=2)
+    model.fit(X_train, y_train)
+
+    # Evaluamos el modelo (opcional, pero bueno para logging)
+    preds = model.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+    print(f"Entrenamiento completado. RMSE en set de prueba: {rmse:.2f}")
+
+    # Guardamos el modelo serializado
+    model_path = os.path.join(settings.BASE_DIR, "ia", "sales_prediction_model.joblib")
+    joblib.dump(model, model_path)
+    print(f"Modelo guardado en: {model_path}")
+
+    return model_path
+
+
+def generate_predictions(days_to_predict=30):
+    """
+    Carga el modelo guardado y genera predicciones para los próximos N días.
+    """
+    model_path = os.path.join(settings.BASE_DIR, "ia", "sales_prediction_model.joblib")
+    if not os.path.exists(model_path):
+        return []
+
+    model = joblib.load(model_path)
+    future_dates = pd.date_range(start=pd.Timestamp.now().date(), periods=days_to_predict + 1)
+    future_df = pd.DataFrame(index=future_dates)
+    future_df = create_features(future_df)
+
+    predictions = model.predict(future_df[['dia_semana', 'dia_mes', 'mes', 'anio', 'semana_anio']])
+    
+    return [{"fecha": date.strftime('%Y-%m-%d'), "prediccion": float(pred)} for date, pred in zip(future_dates, predictions)]
+
+================================================================================
+Archivo: analitica/views.py
+================================================================================
+
+# analitica/views.py
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import permissions
+
+# Esta importación ahora funcionará porque movimos el archivo al backend.
+from ia.train_predictions import generate_predictions
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def sales_predictions_view(request):
+    days = int(request.query_params.get('days', 30))
+    data = generate_predictions(days_to_predict=days)
+    return Response(data)
+
+
+================================================================================
+Archivo: analitica/urls.py
+================================================================================
+
+# analitica/urls.py
+from django.urls import path
+from .views import sales_predictions_view
+
+urlpatterns = [
+    path("predicciones/ventas/", sales_predictions_view, name="sales_predictions"),
+]
+
+================================================================================
+Archivo: frontend/src/pages/reportes/Reportes.jsx
+================================================================================
+
+import { useState, useEffect, useRef } from 'react';
+import api from '../../api/axios.js';
+import { Mic, Download, Eye, Loader2, CheckCircle } from 'lucide-react';
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const recognition = SpeechRecognition ? new SpeechRecognition() : null;
+if (recognition) {
+  // Configuración del reconocimiento de voz
+  recognition.continuous = false;
+  recognition.lang = 'es-ES';
+  recognition.interimResults = false;
+}
+
+export default function Reportes(){
+  const [prompt, setPrompt] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  
+  const [successMessage, setSuccessMessage] = useState(null);
+  // Estado para la previsualización
+  const [previewData, setPreviewData] = useState(null);
+
+  const handleListen = () => {
+    if (!recognition) {
+      alert("El reconocimiento de voz no es compatible con este navegador.");
+      return;
+    }
+    if (isListening) {
+      recognition.stop();
+      setIsListening(false);
+    } else {
+      recognition.start();
+      setIsListening(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!recognition) return;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setPrompt(transcript);
+      recognition.stop();
+      setIsListening(false);
+    };
+    recognition.onerror = (event) => {
+      console.error("Error en reconocimiento de voz:", event.error);
+      setIsListening(false);
+    };
+  }, []);
+
+  // Limpia los mensajes después de unos segundos
+  useEffect(() => {
+    if (error || successMessage) {
+      const timer = setTimeout(() => {
+        setError(null);
+        setSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error, successMessage]);
+
+  // Función para PREVISUALIZAR (siempre pide JSON)
+  const handlePreview = async (e) => {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+
+    setIsLoading(true);
+    setError(null);
+    setPreviewData(null);
+    setSuccessMessage(null);
+
+    try {
+      // Forzamos que no pida PDF/Excel para la preview
+      const previewPrompt = prompt.replace(/\b(en\s+)?(pdf|excel|xlsx)\b/gi, '').trim();
+      const response = await api.post('/reportes/prompt/', { prompt: previewPrompt });
+      setPreviewData(response.data);
+    } catch (err) {
+      console.error("Error al generar reporte:", err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.detail || "Ocurrió un error al previsualizar.";
+      setError(errorMsg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Función para DESCARGAR (siempre pide un archivo binario 'blob')
+  const handleDownload = async (e) => {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+
+    // Validar que el prompt pida un formato descargable
+    if (!/pdf|excel|xlsx/i.test(prompt)) {
+      setError("Para descargar, por favor especifica 'en PDF' o 'en Excel' en tu solicitud.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setPreviewData(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await api.post('/reportes/prompt/', { prompt }, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      const extension = /pdf/i.test(prompt) ? 'pdf' : 'xlsx';
+      const filename = `reporte-${new Date().toISOString().split('T')[0]}.${extension}`;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setSuccessMessage(`¡Reporte "${filename}" descargado con éxito!`);
+    } catch (err) {
+      console.error("Error al descargar reporte:", err);
+      setError(err.response?.data?.detail || "Ocurrió un error al descargar el archivo.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <h2 style={{ margin: "0 0 16px" }}>Generador de Reportes</h2>
+        <form className="prompt-form">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Ej: Reporte de ventas de este mes agrupado por cliente en PDF..."
+            disabled={isLoading}
+            rows="3"
+          />
+          <button type="button" onClick={handleListen} disabled={!recognition || isLoading} className={`btn-icon ${isListening ? 'listening' : ''}`}>
+            <Mic size={20} />
+          </button>
+        </form>
+        <div className="prompt-actions">
+          <button onClick={handlePreview} disabled={isLoading || !prompt.trim()} className="btn">
+            {isLoading ? <Loader2 className="spin" /> : <Eye />}
+            Previsualizar
+          </button>
+          <button onClick={handleDownload} disabled={isLoading || !prompt.trim()} className="btn primary">
+            {isLoading ? <Loader2 className="spin" /> : <Download />}
+            Descargar
+          </button>
+        </div>
+        {error && <div className="alert error" style={{marginTop: '16px'}}>{error}</div>}
+        {successMessage && <div className="alert success" style={{marginTop: '16px'}}>{successMessage}</div>}
+      </div>
+
+      {previewData && (
+        <div className="card">
+          <h3>Previsualización del Reporte</h3>
+          <div className="table-responsive">
+            <table className="table-nowrap">
+              <thead>
+                <tr>{previewData.headers.map(h => <th key={h}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {previewData.rows?.length > 0 ? (
+                  previewData.rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)
+                ) : (
+                  <tr><td colSpan={previewData.headers?.length || 1}>No se encontraron resultados para esta consulta.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+================================================================================
+Archivo: frontend/src/pages/Dashboard.jsx
+================================================================================
+
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import api from '../api/axios.js'
+import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, Line, PieChart, Pie, Cell, Legend } from 'recharts'
+import { DollarSign, ShoppingCart, UserPlus, Ticket } from 'lucide-react'
+
+const COLORS = ['#0ea5e9', '#6366f1', '#ec4899', '#f97316', '#10b981'];
+
+function KpiCard({ title, value, icon, prefix = '' }) {
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ padding: '12px', background: 'var(--border)', borderRadius: '50%' }}>
+          {icon}
+        </div>
+        <div>
+          <div style={{ color: 'var(--muted)' }}>{title}</div>
+          <div style={{ fontSize: '24px', fontWeight: 700 }}>{prefix}{value}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Dashboard(){
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [predictions, setPredictions] = useState([]);
+
+  useEffect(()=>{
+    const fetchData = async()=>{
+      try{
+        // Pedimos los datos históricos y las predicciones en paralelo
+        const [dashboardRes, predictionsRes] = await Promise.all([
+          api.get('/reportes/dashboard/'),
+          api.get('/analitica/predicciones/ventas/')
+        ]);
+        setData(dashboardRes.data);
+        setPredictions(predictionsRes.data);
+      } catch(error) {
+        console.error("Error al cargar los datos del dashboard", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchData()
+  },[])
+
+  // Combinamos datos históricos y de predicción para el gráfico principal
+  const combinedChartData = (data?.ventas_ultimos_30_dias || []).map(item => ({
+    ...item,
+    type: 'historico'
+  })).concat(predictions.map(pred => ({
+    fecha: pred.fecha,
+    total: pred.prediccion,
+    type: 'prediccion'
+  })));
+
+  if (loading) return <div className="card">Cargando dashboard...</div>;
+  if (!data) return <div className="card">No se pudieron cargar los datos del dashboard.</div>;
+
+  return (
+    <div className="grid">
+      {/* Fila de KPIs */}
+      <div className="grid grid-kpi">
+        <KpiCard title="Ventas de Hoy" value={data.kpis.ventas_hoy} prefix="Bs. " icon={<DollarSign />} />
+        <KpiCard title="Ventas del Mes" value={data.kpis.ventas_mes_actual} prefix="Bs. " icon={<ShoppingCart />} />
+        <KpiCard title="Nuevos Clientes (Mes)" value={data.kpis.nuevos_clientes_mes} icon={<UserPlus />} />
+        <KpiCard title="Ticket Promedio (Mes)" value={data.kpis.ticket_promedio} prefix="Bs. " icon={<Ticket />} />
+      </div>
+
+      {/* Fila de Gráficos */}
+      <div className="grid grid-2">
+        <div className="card">
+          <h3>Ventas y Predicciones (Próximos 30 días)</h3>
+          <div style={{width:'100%', height:280}}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={combinedChartData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="fecha" tickFormatter={(date) => new Date(date).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit' })} />
+                <YAxis />
+                <Tooltip formatter={(value) => `Bs. ${value.toLocaleString()}`} />
+                <Legend />
+                <Bar dataKey="total" name="Venta Histórica" fill="var(--brand)" />
+                <Line type="monotone" dataKey="total" name="Predicción" stroke="#ec4899" strokeDasharray="5 5" dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="card">
+          <h3>Ventas por Categoría (Mes)</h3>
+          <div style={{width:'100%', height:280}}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={data.ventas_por_categoria} dataKey="total" nameKey="categoria" cx="50%" cy="50%" outerRadius={80} label>
+                  {data.ventas_por_categoria.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(value) => `Bs. ${value.toLocaleString()}`} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Fila de Últimas Ventas */}
+      <div className="card">
+        <h3>Últimas Ventas</h3>
+        <div className="table-responsive">
+          <table className="table-nowrap">
+            <thead><tr><th>Folio</th><th>Cliente</th><th>Total</th><th>Fecha</th><th></th></tr></thead>
+            <tbody>
+              {data.ultimas_ventas.map(v => (
+                <tr key={v.id}>
+                  <td>{v.folio}</td>
+                  <td>{v.cliente}</td>
+                  <td>Bs. {v.total}</td>
+                  <td>{v.fecha}</td>
+                  <td><Link to={`/ventas/${v.id}`}>Ver Detalle</Link></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {/* Estilo para el grid de KPIs */}
+      <style>{`.grid-kpi { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }`}</style>
+    </div>
+  )
+}
+
+

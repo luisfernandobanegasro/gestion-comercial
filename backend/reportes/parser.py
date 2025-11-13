@@ -1,51 +1,213 @@
 # reportes/parser.py
-import re
+import os, re
+from datetime import datetime
 from typing import Dict, Any
+from django.conf import settings
 
+try:
+    import joblib
+except Exception:
+    joblib = None
+
+# ------------------------------
+# Utiles de fecha (simple)
+# ------------------------------
+SPANISH_MONTHS = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+}
+
+def _ultimo_dia_mes(mes: int, year: int) -> int:
+    if mes in (1, 3, 5, 7, 8, 10, 12):
+        return 31
+    if mes == 2:
+        # suficiente para reportes (no necesitamos calendario exacto de bisiesto)
+        return 29
+    return 30
+
+def _norm_fecha(s: str) -> str:
+    # soporta DD/MM/YYYY → YYYY-MM-DD
+    s = s.strip()
+    if "/" in s and len(s.split("/")) == 3:
+        d, m, y = s.split("/")
+        d = d.zfill(2)
+        m = m.zfill(2)
+        return f"{y}-{m}-{d}"
+    return s  # ya está YYYY-MM-DD
+
+# ------------------------------
+# Cargador del modelo IA (opcional)
+# ------------------------------
+_MODEL = None
+
+def _load_model():
+    """Carga ia/prompt_intent_model.joblib si existe (silencioso)."""
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    if not joblib:
+        return None
+    path = os.path.join(settings.BASE_DIR, "ia", "prompt_intent_model.joblib")
+    if os.path.exists(path):
+        try:
+            _MODEL = joblib.load(path)
+        except Exception:
+            _MODEL = None
+    return _MODEL
+
+# ------------------------------
+# Parser principal
+# ------------------------------
 def parse_prompt(prompt: str) -> Dict[str, Any]:
     """
-    Extrae:
-      - start_date, end_date (YYYY-MM-DD)
-      - group_by: 'producto' | 'cliente' | 'mes' | 'categoria'
-      - format: 'pantalla' | 'pdf' | 'excel'
-    Acepta fechas dd/mm/yyyy o yyyy-mm-dd en el prompt.
+    Devuelve un dict con:
+     - intent: ventas | stock | stock_bajo | precios | top_productos | sin_movimiento | agregar_carrito
+     - group_by (legacy): 'producto' por defecto (lo usan vistas antiguas)
+     - start_date, end_date (YYYY-MM-DD o None)
+     - format: pantalla | pdf | excel
+     - limit, threshold
+     - categoria, marca, contiene
     """
-    p = (prompt or "").lower()
+    p = (prompt or "").lower().strip()
+
     out: Dict[str, Any] = {
+        "intent": "ventas",
+        "group_by": "producto",
         "start_date": None,
         "end_date": None,
-        "group_by": "producto",
         "format": "pantalla",
+        "limit": None,
+        "threshold": None,
+        "categoria": None,
+        "marca": None,
+        "contiene": None,
+        "order_by": None,     # opcional (legacy)
+        "order_dir": None,    # opcional (legacy)
     }
 
-    # fechas dd/mm/yyyy o yyyy-mm-dd
-    fechas = re.findall(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+    # ---- 0) INTENCIÓN ESPECIAL: agregar al carrito ----
+    # ejemplos: "agrega 2 licuadoras al carrito", "quiero 3 mouse gamer a la compra"
+    if re.search(r"\b(agrega|añade|quiero|pon|mete)\b", p) and re.search(r"\b(carrito|compra|pedido)\b", p):
+        out["intent"] = "agregar_carrito"
+        m_prod = re.search(r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)", p)
+        if m_prod:
+            out["limit"] = int(m_prod.group(1) or 1)         # cantidad
+            out["contiene"] = m_prod.group(2).strip()        # nombre del producto
+        return out  # retornamos de inmediato
 
-    def norm(s: str) -> str:
-        if "/" in s:
-            d, m, y = s.split("/")
-            return f"{y}-{m}-{d}"
-        return s
+    # ---- 1) IA: clasifica intención si hay modelo entrenado ----
+    model = _load_model()
+    if model is not None:
+        try:
+            proba = model.predict_proba([p])[0]
+            labels = model.classes_
+            top_i = int(proba.argmax())
+            if proba[top_i] >= 0.60:  # umbral de confianza
+                out["intent"] = labels[top_i]
+        except Exception:
+            pass
 
-    if len(fechas) >= 1:
-        out["start_date"] = norm(fechas[0])
-    if len(fechas) >= 2:
-        out["end_date"] = norm(fechas[1])
+    # ---- 2) Reglas complementarias / override ----
+    # "compras" se considera ventas (sin cambiar el intent si IA ya puso otro)
+    if re.search(r"\b(compra|compras|orden(es)?)\b", p):
+        out["intent"] = "ventas"
 
-    if "producto" in p:
-        out["group_by"] = "producto"
-    elif "cliente" in p:
-        out["group_by"] = "cliente"
-    elif "categor" in p:
-        out["group_by"] = "categoria"
-    elif "mes" in p or "mensual" in p:
-        out["group_by"] = "mes"
+    if re.search(r"\b(precio|precios|lista de precios)\b", p):
+        out["intent"] = "precios"
 
+    elif re.search(r"\b(stock|inventario|existenc)\b", p):
+        out["intent"] = "stock"
+        if re.search(r"\b(poco|bajo|menor|reponer|renovar)\b.*\bstock\b", p) or \
+           re.search(r"\bstock\s+(bajo|menor|crítico|critico)\b", p):
+            out["intent"] = "stock_bajo"
+
+    elif re.search(r"(m[aá]s\s+vendid|top\s*\d+|ranking|estrella|populares)", p):
+        out["intent"] = "top_productos"
+
+    elif re.search(r"(sin venta|no se vendi[oó]|sin movimiento|no vendidos)", p):
+        out["intent"] = "sin_movimiento"
+    
+    elif re.search(r"(menos\s+vendid)", p):
+        # Top invertido: queremos los menos vendidos
+        out["intent"] = "top_productos"
+        out["order_by"] = "unidades"
+        out["order_dir"] = "asc"
+
+
+
+    # ---- 3) Fechas ----
+    # formato explícito "del DD/MM/YYYY al DD/MM/YYYY" (o YYYY-MM-DD)
+    r = re.search(r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+    if r:
+        out["start_date"] = _norm_fecha(r.group(1))
+        out["end_date"] = _norm_fecha(r.group(2))
+    else:
+        # fechas sueltas
+        fechas = re.findall(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+        if len(fechas) >= 1:
+            out["start_date"] = _norm_fecha(fechas[0])
+        if len(fechas) >= 2:
+            out["end_date"] = _norm_fecha(fechas[1])
+
+        # "mes de septiembre", "mensual de octubre"
+        if not out["start_date"] and ("mes de " in p or "mensual" in p):
+            m = re.search(r"mes de ([a-zñ]+)", p)
+            if m:
+                month_name = m.group(1)
+                mes = SPANISH_MONTHS.get(month_name)
+                if mes:
+                    year = datetime.now().year
+                    out["start_date"] = f"{year}-{mes:02d}-01"
+                    out["end_date"] = f"{year}-{mes:02d}-{_ultimo_dia_mes(mes, year):02d}"
+
+        # "último mes", "mes pasado" (dejamos que el builder use fallback 30 días si no se setea)
+        if ("último mes" in p or "ultimo mes" in p or "mes pasado" in p) and not out["start_date"]:
+            # sin setear: el query_builder aplica fallback (últimos 30 días)
+            pass
+
+    # ---- 4) Formato ----
     if "pdf" in p:
         out["format"] = "pdf"
     elif "excel" in p or "xlsx" in p:
         out["format"] = "excel"
     else:
         out["format"] = "pantalla"
+
+    # ---- 5) Limit (top) ----
+    mtop = re.search(r"\btop\s+(\d{1,3})\b", p)
+    if mtop:
+        out["limit"] = int(mtop.group(1))
+    if out["limit"] is None:
+        mcount = re.search(r"\b(?:los\s+)?(\d{1,3})\s+(?:productos?|items?)\b", p)
+        if mcount:
+            out["limit"] = int(mcount.group(1))
+
+    # ---- 6) Threshold (para stock bajo) ----
+    mth = re.search(r"(?:menor(?:\s*a)?|<)\s*(\d{1,6})", p)
+    if mth:
+        out["threshold"] = int(mth.group(2) if mth.lastindex and mth.group(2) else mth.group(1))
+
+    # ---- 7) Filtros simples ----
+    mc = re.search(r"categor[ií]a\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mc:
+        out["categoria"] = mc.group(1).strip()
+
+    mm = re.search(r"marca\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mm:
+        out["marca"] = mm.group(1).strip()
+
+    mn = re.search(r"(?:que\s+contenga|contiene|con\s+nombre)\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mn:
+        out["contiene"] = mn.group(1).strip()
+
+    # ---- 8) Orden (legacy: por si lo necesitas desde services)
+    if re.search(r"(menor a mayor|ascendente|asc\b)", p):
+        out["order_dir"] = "asc"
+    elif re.search(r"(mayor a menor|descendente|desc\b)", p):
+        out["order_dir"] = "desc"
+
+    if re.search(r"ordenad[oa]s?\s+por\s+stock", p):
+        out["order_by"] = "stock"
 
     return out

@@ -1,19 +1,25 @@
 # ventas/management/commands/seed_demo.py
 from decimal import Decimal
+import random
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from django.db import transaction
 
 from cuentas.models import Rol
 from clientes.models import Cliente
-from catalogo.models import Categoria, Producto
+from catalogo.models import Producto
 from ventas.models import Venta, ItemVenta
 
 User = get_user_model()
 
 
 class Command(BaseCommand):
-    help = "Crea roles/usuarios/clientes/catalogo y ventas de demo."
+    help = "Crea roles/usuarios/clientes y un set grande de ventas demo (últimos 3 meses)."
 
+    @transaction.atomic
     def handle(self, *args, **kwargs):
         # -------------------------
         # Roles base
@@ -29,7 +35,7 @@ class Command(BaseCommand):
         )
 
         # -------------------------
-        # Usuarios
+        # Usuarios admin / empleado
         # -------------------------
         admin, _ = User.objects.get_or_create(
             username="admin", defaults={"email": "admin@demo.com"}
@@ -47,92 +53,154 @@ class Command(BaseCommand):
             empleado.save()
         empleado.roles.add(emp_rol)
 
-        cliente_u, _ = User.objects.get_or_create(
+        # -------------------------
+        # Clientes (usuarios + perfil)
+        # -------------------------
+        clientes = []
+
+        # Aseguramos cliente1 (por compatibilidad con lo que ya tenías)
+        cli_user_1, _ = User.objects.get_or_create(
             username="cliente1", defaults={"email": "cli@demo.com"}
         )
-        if not cliente_u.has_usable_password():
-            cliente_u.set_password("1234")
-            cliente_u.save()
-        cliente_u.roles.add(cli_rol)
+        if not cli_user_1.has_usable_password():
+            cli_user_1.set_password("1234")
+            cli_user_1.save()
+        cli_user_1.roles.add(cli_rol)
+
+        c1, _ = Cliente.objects.get_or_create(
+            usuario=cli_user_1,
+            defaults={
+                "nombre": "Cliente Demo 1",
+                "email": "cli@demo.com",
+                "telefono": "70000001",
+                "direccion": "Calle Demo 1, Zona Centro",
+                "documento": "CI-8000001",
+                "activo": True,
+            },
+        )
+        clientes.append(c1)
+
+        # Ahora creamos más clientes: cliente2 ... cliente40
+        for i in range(2, 41):
+            username = f"cliente{i}"
+            email = f"cliente{i}@demo.com"
+
+            user, _ = User.objects.get_or_create(
+                username=username,
+                defaults={"email": email},
+            )
+            if not user.has_usable_password():
+                user.set_password("1234")
+                user.save()
+            user.roles.add(cli_rol)
+
+            cliente, _ = Cliente.objects.get_or_create(
+                usuario=user,
+                defaults={
+                    "nombre": f"Cliente Demo {i}",
+                    "email": email,
+                    "telefono": f"7000{i:04d}",
+                    "direccion": f"Calle Demo {i}, Zona Centro",
+                    "documento": f"CI-{8000000 + i}",
+                    "activo": True,
+                },
+            )
+            clientes.append(cliente)
+
+        self.stdout.write(self.style.SUCCESS(f"✔ Clientes DEMO listos: {len(clientes)}"))
 
         # -------------------------
-        # Cliente (el perfil se crea automáticamente por el signal al asignar el rol)
+        # Productos para usar en las ventas
         # -------------------------
-        try:
-            # Obtenemos el perfil de cliente que el signal debió haber creado
-            c1 = Cliente.objects.get(usuario=cliente_u)
-            self.stdout.write("✔ Perfil de cliente para 'cliente1' encontrado.")
-        except Cliente.DoesNotExist:
-            self.stdout.write(self.style.ERROR("❌ No se encontró el perfil de cliente para 'cliente1'. Revisa los signals."))
+        productos = list(Producto.objects.filter(activo=True))
+        if not productos:
+            self.stdout.write(
+                self.style.ERROR(
+                    "❌ No hay productos activos. Ejecuta primero: python manage.py seed_catalogo"
+                )
+            )
             return
 
         # -------------------------
-        # Catálogo (categoría y productos)
+        # Limpiar ventas demo anteriores (solo las marcadas como [DEMO])
         # -------------------------
-        cat, _ = Categoria.objects.get_or_create(nombre="Tecnología")
-
-        p1, _ = Producto.objects.get_or_create(
-            nombre="Mouse Gamer",
-            defaults={"categoria": cat, "precio": Decimal("25.00"), "stock": 100},
-        )
-        p2, _ = Producto.objects.get_or_create(
-            nombre="Teclado Mecánico",
-            defaults={"categoria": cat, "precio": Decimal("55.00"), "stock": 50},
-        )
-
-        # Asegura que los productos tengan stock (por si ya existían con 0)
-        if p1.stock < 10:
-            p1.stock = 100
-            p1.save(update_fields=["stock"])
-        if p2.stock < 10:
-            p2.stock = 50
-            p2.save(update_fields=["stock"])
-
-        # -------------------------
-        # Venta DEMO #1 (PENDIENTE) del cliente
-        # -------------------------
-        v1, _ = Venta.objects.get_or_create(
-            cliente=c1,
-            estado="pendiente",
-            defaults={"observaciones": "Venta de demostración (pendiente)", "usuario": empleado},
-        )
-        # reset items
-        v1.items.all().delete()
-        ItemVenta.objects.create(
-            venta=v1,
-            producto=p1,
-            cantidad=2,
-            precio_unit=p1.precio,
-            subtotal=p1.precio * Decimal("2"),
-        )
-        ItemVenta.objects.create(
-            venta=v1,
-            producto=p2,
-            cantidad=1,
-            precio_unit=p2.precio,
-            subtotal=p2.precio * Decimal("1"),
-        )
-        v1.recalc_totales()
-
-        # -------------------------
-        # Venta DEMO #2 (PAGADA) del cliente
-        # -------------------------
-        v2, created = Venta.objects.get_or_create(
-            cliente=c1,
-            estado="pagada",
-            defaults={"observaciones": "Venta de demostración (pagada)", "usuario": empleado},
-        )
-        if created or not v2.items.exists():
-            v2.items.all().delete()
-            ItemVenta.objects.create(
-                venta=v2,
-                producto=p1,
-                cantidad=3,
-                precio_unit=p1.precio,
-                subtotal=p1.precio * Decimal("3"),
+        demo_ventas = Venta.objects.filter(observaciones__startswith="[DEMO]")
+        demo_count = demo_ventas.count()
+        if demo_count:
+            self.stdout.write(
+                f"🧹 Eliminando {demo_count} ventas demo anteriores (observaciones '[DEMO] ...')."
             )
-            v2.recalc_totales()
+            demo_ventas.delete()
 
-        self.stdout.write(self.style.SUCCESS("✔ Seed demo creado:"))
-        self.stdout.write("- Usuarios: admin/1234, empleado1/1234, cliente1/1234")
-        self.stdout.write("- Ventas: 1 pendiente y 1 pagada (para reportes)")
+        # -------------------------
+        # Crear ventas históricas de los últimos 3 meses
+        # -------------------------
+        now = timezone.now()
+        dias_rango = 90  # ~3 meses
+        estados = ["pendiente", "pagada"]
+
+        total_ventas_creadas = 0
+        total_items_creados = 0
+
+        for cli in clientes:
+            # entre 1 y 4 ventas por cliente
+            num_ventas = random.randint(1, 4)
+
+            for _ in range(num_ventas):
+                # Fecha aleatoria en los últimos 90 días
+                delta_dias = random.randint(1, dias_rango)
+                fecha = now - timedelta(days=delta_dias)
+
+                estado = random.choice(estados)
+
+                v = Venta.objects.create(
+                    cliente=cli,
+                    estado=estado,
+                    observaciones=f"[DEMO] Venta auto-generada para {cli.nombre}",
+                    usuario=empleado,
+                    creado_en=fecha,
+                    actualizado_en=fecha,
+                )
+
+                # Entre 1 y 4 productos por venta
+                num_items = random.randint(1, 4)
+                usados_ids = set()
+
+                for _ in range(num_items):
+                    prod = random.choice(productos)
+                    # Evitar repetir el mismo producto muchas veces en la misma venta
+                    if prod.id in usados_ids:
+                        continue
+                    usados_ids.add(prod.id)
+
+                    cantidad = random.randint(1, 3)
+                    subtotal = prod.precio * Decimal(cantidad)
+
+                    ItemVenta.objects.create(
+                        venta=v,
+                        producto=prod,
+                        cantidad=cantidad,
+                        precio_unit=prod.precio,
+                        subtotal=subtotal,
+                    )
+                    total_items_creados += 1
+
+                # Recalcula subtotal/total
+                v.recalc_totales()
+
+                # Actualizamos la fecha nuevamente por si recalc_totales hace save()
+                Venta.objects.filter(pk=v.pk).update(
+                    creado_en=fecha,
+                    actualizado_en=fecha,
+                )
+
+                total_ventas_creadas += 1
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"✔ Ventas DEMO creadas: {total_ventas_creadas} (items: {total_items_creados})"
+            )
+        )
+        self.stdout.write(
+            "- Usuarios demo: admin/1234, empleado1/1234, cliente1..cliente40 (pass: 1234)"
+        )

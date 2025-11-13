@@ -1,3 +1,4 @@
+// src/pages/ventas/Ventas.jsx
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import api from '../../api/axios'
@@ -10,6 +11,13 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   const { id: ventaId } = useParams()
   const [productos, setProductos] = useState([])
   const [buscar, setBuscar] = useState('')
+  const [filtroCategoria, setFiltroCategoria] = useState('')
+  const [filtroMarca, setFiltroMarca] = useState('')
+  const [soloOfertas, setSoloOfertas] = useState(false)
+
+  const [categorias, setCategorias] = useState([])
+  const [marcas, setMarcas] = useState([])
+
   const [carrito, setCarrito] = useState([])
   const [productoActivo, setProductoActivo] = useState(null)
   const [cliente, setCliente] = useState('')
@@ -22,41 +30,100 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   useEffect(() => {
     (async () => {
       try {
+        // Productos
         const p = await api.get(`${PATHS.productos}?ordering=nombre`)
         setProductos(p.data?.results || p.data || [])
-      } catch { setProductos([]) }
+      } catch {
+        setProductos([])
+      }
 
       try {
+        // Clientes
         const c = await api.get(`${PATHS.clientes}?ordering=nombre`)
         setClientes(c.data?.results || c.data || [])
-      } catch { setClientes([]) }
+      } catch {
+        setClientes([])
+      }
 
+      try {
+        // Categorías
+        const cat = await api.get(`${PATHS.categorias}?ordering=nombre`)
+        setCategorias(cat.data?.results || cat.data || [])
+      } catch {
+        setCategorias([])
+      }
+
+      try {
+        // Marcas
+        const m = await api.get(`${PATHS.marcas}?ordering=nombre`)
+        setMarcas(m.data?.results || m.data || [])
+      } catch {
+        setMarcas([])
+      }
+
+      // Carga de venta para edición
       if (isEditing && ventaId) {
         try {
           const res = await api.get(`${PATHS.ventas.root}${ventaId}/`)
           const v = res.data
           setCliente(v.cliente)
-          setCarrito(v.items.map(it => ({
-            producto: it.producto,
-            nombre: it.producto_nombre,
-            cantidad: it.cantidad,
-            precio_unit: Number(it.precio_unit)
-          })))
-        } finally { setLoadingVenta(false) }
+          setCarrito(
+            v.items.map(it => ({
+              producto: it.producto,
+              nombre: it.producto_nombre,
+              cantidad: it.cantidad,
+              // aquí respetamos el precio que ya tiene la venta
+              precio_unit: Number(it.precio_unit)
+            }))
+          )
+        } finally {
+          setLoadingVenta(false)
+        }
+      } else {
+        setLoadingVenta(false)
       }
     })()
   }, [isEditing, ventaId])
 
+  // Lista filtrada de productos (buscador + filtros + solo ofertas)
   const list = useMemo(() => {
-    const q = buscar.trim().toLowerCase()
-    if (!q) return productos
-    return productos.filter(x =>
-      (x.nombre || '').toLowerCase().includes(q) ||
-      (x.descripcion || '').toLowerCase().includes(q)
-    )
-  }, [productos, buscar])
+    let data = productos
 
+    // Filtro por categoría
+    if (filtroCategoria) {
+      data = data.filter(p => String(p.categoria) === String(filtroCategoria))
+    }
+
+    // Filtro por marca
+    if (filtroMarca) {
+      data = data.filter(p => String(p.marca) === String(filtroMarca))
+    }
+
+    // Solo productos que tienen oferta activa
+    if (soloOfertas) {
+      data = data.filter(p => !!p.oferta_activa)
+    }
+
+    // Buscador de texto
+    const q = buscar.trim().toLowerCase()
+    if (q) {
+      data = data.filter(x =>
+        (x.nombre || '').toLowerCase().includes(q) ||
+        (x.modelo || '').toLowerCase().includes(q) ||
+        (x.codigo || '').toLowerCase().includes(q) ||
+        (x.caracteristicas || '').toLowerCase().includes(q)
+      )
+    }
+
+    return data
+  }, [productos, buscar, filtroCategoria, filtroMarca, soloOfertas])
+
+  // ➜ Usa precio_final si existe, si no el precio normal
   const add = useCallback((prod, cantidad = 1) => {
+    const precioUnit = prod.precio_final != null
+      ? Number(prod.precio_final)
+      : Number(prod.precio || 0)
+
     setCarrito(prev => {
       const i = prev.findIndex(x => x.producto === prod.id)
       if (i >= 0) {
@@ -70,7 +137,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
           producto: prod.id,
           nombre: prod.nombre,
           modelo: prod.modelo,
-          precio_unit: Number(prod.precio || 0),
+          precio_unit: precioUnit,
           cantidad
         }
       ]
@@ -85,18 +152,21 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
       return a
     })
 
-  const inc = (i) => setCarrito(prev => {
-    const a = [...prev]
-    a[i] = { ...a[i], cantidad: a[i].cantidad + 1 }
-    return a
-  })
-  const dec = (i) => setCarrito(prev => {
-    const a = [...prev]
-    a[i] = { ...a[i], cantidad: Math.max(1, a[i].cantidad - 1) }
-    return a
-  })
+  const inc = i =>
+    setCarrito(prev => {
+      const a = [...prev]
+      a[i] = { ...a[i], cantidad: a[i].cantidad + 1 }
+      return a
+    })
 
-  const quitar = (i) => setCarrito(prev => prev.filter((_, k) => k !== i))
+  const dec = i =>
+    setCarrito(prev => {
+      const a = [...prev]
+      a[i] = { ...a[i], cantidad: Math.max(1, a[i].cantidad - 1) }
+      return a
+    })
+
+  const quitar = i => setCarrito(prev => prev.filter((_, k) => k !== i))
   const total = carrito.reduce((s, i) => s + i.cantidad * i.precio_unit, 0)
 
   const guardarVenta = async () => {
@@ -108,6 +178,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
       items: carrito.map(it => ({
         producto: it.producto,
         cantidad: it.cantidad,
+        // ➜ aquí ya va el precio con descuento (si lo tenía)
         precio_unit: it.precio_unit
       }))
     }
@@ -124,7 +195,11 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
       onVentaGuardada(res.data.id)
     } catch (error) {
       console.error('Error al guardar la venta:', error.response?.data || error)
-      alert(`Hubo un error al guardar la venta: ${error.response?.data?.detail || ''}`)
+      alert(
+        `Hubo un error al guardar la venta: ${
+          error.response?.data?.detail || ''
+        }`
+      )
     }
   }
 
@@ -132,7 +207,16 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
     carritoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
-  if (loadingVenta) return <div className="card">Cargando datos de la venta para editar...</div>
+  const limpiarFiltros = () => {
+    setBuscar('')
+    setFiltroCategoria('')
+    setFiltroMarca('')
+    setSoloOfertas(false)
+  }
+
+  if (loadingVenta) {
+    return <div className="card">Cargando datos de la venta para editar...</div>
+  }
 
   return (
     <>
@@ -140,16 +224,83 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         {/* Columna Izquierda: Filtros + Catálogo */}
         <div className="grid" style={{ gap: 16, alignContent: 'start' }}>
           <div className="card">
-            <div className="form-row">
+            <div
+              className="form-row"
+              style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
+            >
               <input
-                placeholder="Buscar producto…"
+                placeholder="Buscar producto por nombre, modelo o código…"
                 value={buscar}
                 onChange={e => setBuscar(e.target.value)}
+                style={{ flex: '2 1 220px' }}
               />
-              <select value={cliente} onChange={e => setCliente(e.target.value)}>
+
+              <select
+                value={filtroCategoria}
+                onChange={e => setFiltroCategoria(e.target.value)}
+                style={{ flex: '1 1 160px' }}
+              >
+                <option value="">Todas las categorías</option>
+                {categorias.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.nombre}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={filtroMarca}
+                onChange={e => setFiltroMarca(e.target.value)}
+                style={{ flex: '1 1 160px' }}
+              >
+                <option value="">Todas las marcas</option>
+                {marcas.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.nombre}
+                  </option>
+                ))}
+              </select>
+
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 13
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={soloOfertas}
+                  onChange={e => setSoloOfertas(e.target.checked)}
+                />
+                Solo ofertas
+              </label>
+
+              <button
+                type="button"
+                onClick={limpiarFiltros}
+                className="btn-secondary"
+                style={{ fontSize: 13 }}
+              >
+                Limpiar
+              </button>
+            </div>
+
+            <div
+              className="form-row"
+              style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
+            >
+              <select
+                value={cliente}
+                onChange={e => setCliente(e.target.value)}
+                style={{ flex: 1 }}
+              >
                 <option value="">— Selecciona un cliente —</option>
                 {(clientes || []).map(c => (
-                  <option key={c.id} value={c.id}>{c.nombre}</option>
+                  <option key={c.id} value={c.id}>
+                    {c.nombre}
+                  </option>
                 ))}
               </select>
             </div>
@@ -158,33 +309,83 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
           <div className="card">
             <h3>Catálogo</h3>
             <div className="cards">
-              {list.map(p => (
-                <div
-                  key={p.id}
-                  className="card-item"
-                  onClick={() => setProductoActivo(p)}
-                >
-                  <img
-                    src={p.imagen_url || `https://picsum.photos/seed/${p.id}/600/400`}
-                    alt={p.nombre}
-                  />
-                  <div style={{ fontWeight: 700 }}>{p.nombre}</div>
-                  <div style={{ color: 'var(--muted)' }}>
-                    Bs. {Number(p.precio || 0).toFixed(2)}
-                  </div>
-                  <button
-                    className="add-to-cart-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      add(p, 1)
-                    }}
-                    aria-label="Añadir al carrito"
-                    title="Añadir al carrito"
+              {list.map(p => {
+                const precioOriginal = Number(p.precio || 0)
+                const precioDesc = p.precio_final != null
+                  ? Number(p.precio_final)
+                  : precioOriginal
+                const descuento = p.oferta_activa
+                  ? Number(p.oferta_activa.porcentaje_descuento).toFixed(0)
+                  : null
+                const tieneDescuento = descuento && precioDesc < precioOriginal
+
+                return (
+                  <div
+                    key={p.id}
+                    className="card-item"
+                    onClick={() => setProductoActivo(p)}
                   >
-                    <Plus size={20} />
-                  </button>
-                </div>
-              ))}
+                    <img
+                      src={
+                        p.imagen_url ||
+                        `https://picsum.photos/seed/${p.id}/600/400`
+                      }
+                      alt={p.nombre}
+                    />
+
+                    {/* Etiqueta de oferta si aplica */}
+                    {tieneDescuento && (
+                      <span className="badge-oferta">-{descuento}%</span>
+                    )}
+
+                    <div style={{ fontWeight: 700 }}>{p.nombre}</div>
+                    <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                      {p.marca_nombre || 'Sin marca'} · {p.categoria_nombre}
+                    </div>
+
+                    {/* Precio mostrando descuento si aplica */}
+                    <div style={{ marginTop: 4 }}>
+                      {tieneDescuento ? (
+                        <>
+                          <span
+                            style={{
+                              textDecoration: 'line-through',
+                              opacity: 0.6,
+                              marginRight: 6
+                            }}
+                          >
+                            Bs. {precioOriginal.toFixed(2)}
+                          </span>
+                          <span style={{ fontWeight: 700 }}>
+                            Bs. {precioDesc.toFixed(2)}
+                          </span>
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--muted)' }}>
+                          Bs. {precioOriginal.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+
+                    <button
+                      className="add-to-cart-btn"
+                      onClick={e => {
+                        e.stopPropagation()
+                        add(p, 1)
+                      }}
+                      aria-label="Añadir al carrito"
+                      title="Añadir al carrito"
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </div>
+                )
+              })}
+              {list.length === 0 && (
+                <p style={{ color: 'var(--muted)', padding: '12px 0' }}>
+                  No se encontraron productos con los filtros aplicados.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -193,7 +394,10 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         <div className="carrito-sticky" ref={carritoRef}>
           <div className="card carrito-card">
             <h3>
-              Carrito {carrito.length ? <span style={{ opacity: .7 }}>({carrito.length})</span> : null}
+              Carrito{' '}
+              {carrito.length ? (
+                <span style={{ opacity: 0.7 }}>({carrito.length})</span>
+              ) : null}
             </h3>
             <CarritoTable
               carrito={carrito}
@@ -261,6 +465,18 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         }
         .add-to-cart-btn:hover { transform: scale(1.1); box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
 
+        .badge-oferta{
+          position:absolute;
+          top:8px;
+          left:8px;
+          background:#e11d48;
+          color:white;
+          font-size:11px;
+          font-weight:700;
+          padding:2px 6px;
+          border-radius:999px;
+        }
+
         /* Stepper de cantidad dentro de la tabla */
         .qty-stepper {
           display: inline-flex; align-items: center; gap: 6px;
@@ -299,9 +515,17 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
 
 function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
   if (carrito.length === 0) {
-    return <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '20px 0' }}>
-      El carrito está vacío.
-    </p>
+    return (
+      <p
+        style={{
+          color: 'var(--muted)',
+          textAlign: 'center',
+          padding: '20px 0'
+        }}
+      >
+        El carrito está vacío.
+      </p>
+    )
   }
   return (
     <div className="table-responsive">
@@ -321,7 +545,11 @@ function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
               <td className="col-text">{it.nombre}</td>
               <td className="col-cant">
                 <div className="qty-stepper">
-                  <button className="btn-icon" onClick={() => dec(i)} aria-label="Disminuir">
+                  <button
+                    className="btn-icon"
+                    onClick={() => dec(i)}
+                    aria-label="Disminuir"
+                  >
                     <Minus size={16} />
                   </button>
                   <input
@@ -331,13 +559,19 @@ function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
                     value={it.cantidad}
                     onChange={e => setCant(i, e.target.value)}
                   />
-                  <button className="btn-icon" onClick={() => inc(i)} aria-label="Aumentar">
+                  <button
+                    className="btn-icon"
+                    onClick={() => inc(i)}
+                    aria-label="Aumentar"
+                  >
                     <Plus size={16} />
                   </button>
                 </div>
               </td>
               <td className="col-num">{it.precio_unit.toFixed(2)}</td>
-              <td className="col-num">{(it.precio_unit * it.cantidad).toFixed(2)}</td>
+              <td className="col-num">
+                {(it.precio_unit * it.cantidad).toFixed(2)}
+              </td>
               <td className="col-actions">
                 <button
                   className="btn-icon"
@@ -353,7 +587,9 @@ function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
         </tbody>
         <tfoot>
           <tr>
-            <th colSpan={3} style={{ textAlign: 'right' }}>Total:</th>
+            <th colSpan={3} style={{ textAlign: 'right' }}>
+              Total:
+            </th>
             <th>Bs. {total.toFixed(2)}</th>
             <th />
           </tr>
@@ -365,15 +601,29 @@ function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
 
 function ProductoModal({ producto, onAdd, onClose }) {
   const [cantidad, setCantidad] = useState(1)
-  const handleModalClick = (e) => e.stopPropagation()
+  const handleModalClick = e => e.stopPropagation()
+
+  const precioOriginal = Number(producto.precio || 0)
+  const precioDesc = producto.precio_final != null
+    ? Number(producto.precio_final)
+    : precioOriginal
+  const descuento = producto.oferta_activa
+    ? Number(producto.oferta_activa.porcentaje_descuento).toFixed(0)
+    : null
+  const tieneDescuento = descuento && precioDesc < precioOriginal
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-content" onClick={handleModalClick}>
-        <button className="modal-close" onClick={onClose}>&times;</button>
+        <button className="modal-close" onClick={onClose}>
+          &times;
+        </button>
         <div className="grid-2" style={{ alignItems: 'start' }}>
           <img
-            src={producto.imagen_url || `https://picsum.photos/seed/${producto.id}/600/400`}
+            src={
+              producto.imagen_url ||
+              `https://picsum.photos/seed/${producto.id}/600/400`
+            }
             alt={producto.nombre}
             style={{ width: '100%', borderRadius: 12 }}
           />
@@ -384,27 +634,67 @@ function ProductoModal({ producto, onAdd, onClose }) {
                 Modelo: {producto.modelo}
               </p>
             )}
-            <p><strong>Precio:</strong> Bs. {Number(producto.precio || 0).toFixed(2)}</p>
-            <p><strong>Stock disponible:</strong> {producto.stock || 0}</p>
+
+            <p>
+              <strong>Precio:</strong>{' '}
+              {tieneDescuento ? (
+                <>
+                  <span
+                    style={{
+                      textDecoration: 'line-through',
+                      opacity: 0.6,
+                      marginRight: 6
+                    }}
+                  >
+                    Bs. {precioOriginal.toFixed(2)}
+                  </span>
+                  <span>Bs. {precioDesc.toFixed(2)}</span>
+                  {'  '}
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    (-{descuento}%)
+                  </span>
+                </>
+              ) : (
+                <>Bs. {precioOriginal.toFixed(2)}</>
+              )}
+            </p>
+
+            <p>
+              <strong>Stock disponible:</strong> {producto.stock || 0}
+            </p>
 
             {producto.caracteristicas ? (
               <div style={{ marginTop: 16 }}>
                 <strong>Características:</strong>
-                <p style={{ whiteSpace: 'pre-wrap', color: 'var(--muted)', marginTop: 4, fontSize: '14px' }}>
+                <p
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    color: 'var(--muted)',
+                    marginTop: 4,
+                    fontSize: '14px'
+                  }}
+                >
                   {producto.caracteristicas}
                 </p>
               </div>
-            ) : <p>Este producto no tiene una descripción detallada.</p>}
+            ) : (
+              <p>Este producto no tiene una descripción detallada.</p>
+            )}
 
             <div className="btn-row" style={{ marginTop: 24 }}>
               <input
                 type="number"
                 min={1}
                 value={cantidad}
-                onChange={e => setCantidad(Math.max(1, Number(e.target.value)))}
+                onChange={e =>
+                  setCantidad(Math.max(1, Number(e.target.value)))
+                }
                 style={{ maxWidth: 80 }}
               />
-              <button className="primary" onClick={() => onAdd(producto, cantidad)}>
+              <button
+                className="primary"
+                onClick={() => onAdd(producto, cantidad)}
+              >
                 Añadir {cantidad} al carrito
               </button>
             </div>
@@ -419,7 +709,7 @@ export default function Ventas({ isEditing = false }) {
   const [tab, setTab] = useState('nueva')
   const navigate = useNavigate()
 
-  const handleVentaGuardada = (id) => {
+  const handleVentaGuardada = id => {
     navigate(`/ventas/${id}`)
   }
 
@@ -444,11 +734,20 @@ export default function Ventas({ isEditing = false }) {
         </div>
       )}
 
-      {isEditing && <div className="card"><h2>Editando Venta</h2></div>}
+      {isEditing && (
+        <div className="card">
+          <h2>Editando Venta</h2>
+        </div>
+      )}
 
-      {(tab === 'nueva' || isEditing)
-        ? <FormularioNuevaVenta onVentaGuardada={handleVentaGuardada} isEditing={isEditing} />
-        : <ListaVentas />}
+      {tab === 'nueva' || isEditing ? (
+        <FormularioNuevaVenta
+          onVentaGuardada={handleVentaGuardada}
+          isEditing={isEditing}
+        />
+      ) : (
+        <ListaVentas />
+      )}
     </>
   )
 }

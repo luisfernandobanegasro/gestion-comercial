@@ -23,12 +23,13 @@ urlpatterns = [
     path("api/ventas/", include("ventas.urls")),
     path("api/pagos/", include("pagos.urls")),
     path("api/reportes/", include("reportes.urls")),
-    path("api/configuracion/", include("configuracion.urls")),
-    # path("api/analitica/", include("analitica.urls")),
+    path("api/configuracion/", include("configuracion.urls")),    
+    path("api/analitica/", include("analitica.urls")),
     path("api/auditoria/", include("auditoria.urls")),  # ← esta es la que te falla ahora
     # path("api/ia/", include("ia.urls")),
 
     path("health/", health_check, name="health_check"),
+    
 ]
 
 if settings.DEBUG:

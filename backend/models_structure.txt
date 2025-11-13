@@ -1,0 +1,267 @@
+=====================================================
+=      Estructura de Modelos del Proyecto Django      =
+=====================================================
+
+--- App: cuentas ---
+
+  Modelo: Permiso
+  --------------------
+    - roles (ManyToManyRel) -> Relación con 'Rol'
+    - id (BigAutoField)
+    - codigo (CharField)
+    - descripcion (CharField)
+
+  Modelo: Rol
+  --------------------
+    - usuarios (ManyToManyRel) -> Relación con 'Usuario'
+    - id (BigAutoField)
+    - nombre (CharField)
+    - descripcion (CharField)
+    - permisos (ManyToManyField) -> Relación con 'Permiso'
+
+  Modelo: Usuario
+  --------------------
+    - logentry (ManyToOneRel) -> Relación con 'LogEntry'
+    - registroauditoria (ManyToOneRel) -> Relación con 'RegistroAuditoria'
+    - movimientoinventario (ManyToOneRel) -> Relación con 'MovimientoInventario'
+    - perfil_cliente (OneToOneRel) -> Relación con 'Cliente'
+    - ventas_creadas (ManyToOneRel) -> Relación con 'Venta'
+    - pago (ManyToOneRel) -> Relación con 'Pago'
+    - id (BigAutoField)
+    - password (CharField)
+    - last_login (DateTimeField)
+    - is_superuser (BooleanField)
+    - username (CharField)
+    - first_name (CharField)
+    - last_name (CharField)
+    - email (EmailField)
+    - is_staff (BooleanField)
+    - is_active (BooleanField)
+    - date_joined (DateTimeField)
+    - activo (BooleanField)
+    - groups (ManyToManyField) -> Relación con 'Group'
+    - user_permissions (ManyToManyField) -> Relación con 'Permission'
+    - roles (ManyToManyField) -> Relación con 'Rol'
+
+--- App: django.contrib.admin ---
+
+  Modelo: LogEntry
+  --------------------
+    - id (AutoField)
+    - action_time (DateTimeField)
+    - user (ForeignKey) -> Relación con 'Usuario'
+    - content_type (ForeignKey) -> Relación con 'ContentType'
+    - object_id (TextField)
+    - object_repr (CharField)
+    - action_flag (PositiveSmallIntegerField)
+    - change_message (TextField)
+
+--- App: django.contrib.auth ---
+
+  Modelo: Permission
+  --------------------
+    - user (ManyToManyRel) -> Relación con 'Usuario'
+    - group (ManyToManyRel) -> Relación con 'Group'
+    - id (AutoField)
+    - name (CharField)
+    - content_type (ForeignKey) -> Relación con 'ContentType'
+    - codename (CharField)
+
+  Modelo: Group
+  --------------------
+    - user (ManyToManyRel) -> Relación con 'Usuario'
+    - id (AutoField)
+    - name (CharField)
+    - permissions (ManyToManyField) -> Relación con 'Permission'
+
+--- App: django.contrib.contenttypes ---
+
+  Modelo: ContentType
+  --------------------
+    - logentry (ManyToOneRel) -> Relación con 'LogEntry'
+    - permission (ManyToOneRel) -> Relación con 'Permission'
+    - id (AutoField)
+    - app_label (CharField)
+    - model (CharField)
+
+--- App: django.contrib.sessions ---
+
+  Modelo: Session
+  --------------------
+    - session_key (CharField)
+    - session_data (TextField)
+    - expire_date (DateTimeField)
+
+--- App: django.contrib.messages ---
+
+--- App: django.contrib.staticfiles ---
+
+--- App: whitenoise.runserver_nostatic ---
+
+--- App: rest_framework ---
+
+--- App: django_filters ---
+
+--- App: drf_spectacular ---
+
+--- App: corsheaders ---
+
+--- App: auditoria ---
+
+  Modelo: RegistroAuditoria
+  --------------------
+    - id (BigAutoField)
+    - usuario (ForeignKey) -> Relación con 'Usuario'
+    - accion (CharField)
+    - modulo (CharField)
+    - ip (GenericIPAddressField)
+    - user_agent (CharField)
+    - ruta (CharField)
+    - metodo (CharField)
+    - estado (IntegerField)
+    - payload (JSONField)
+    - fecha (DateField)
+    - hora (TimeField)
+    - creado_en (DateTimeField)
+
+--- App: catalogo ---
+
+  Modelo: Categoria
+  --------------------
+    - ofertas (ManyToManyRel) -> Relación con 'Oferta'
+    - productos (ManyToOneRel) -> Relación con 'Producto'
+    - id (BigAutoField)
+    - nombre (CharField)
+    - descripcion (CharField)
+    - activa (BooleanField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+
+  Modelo: Marca
+  --------------------
+    - ofertas (ManyToManyRel) -> Relación con 'Oferta'
+    - productos (ManyToOneRel) -> Relación con 'Producto'
+    - id (BigAutoField)
+    - nombre (CharField)
+    - activa (BooleanField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+
+  Modelo: Oferta
+  --------------------
+    - id (BigAutoField)
+    - nombre (CharField)
+    - porcentaje_descuento (DecimalField)
+    - fecha_inicio (DateTimeField)
+    - fecha_fin (DateTimeField)
+    - activa (BooleanField)
+    - marcas (ManyToManyField) -> Relación con 'Marca'
+    - categorias (ManyToManyField) -> Relación con 'Categoria'
+    - productos_especificos (ManyToManyField) -> Relación con 'Producto'
+
+  Modelo: Producto
+  --------------------
+    - ofertas_especificas (ManyToManyRel) -> Relación con 'Oferta'
+    - movimientos (ManyToOneRel) -> Relación con 'MovimientoInventario'
+    - items_vendidos (ManyToOneRel) -> Relación con 'ItemVenta'
+    - id (BigAutoField)
+    - codigo (CharField)
+    - nombre (CharField)
+    - modelo (CharField)
+    - caracteristicas (TextField)
+    - marca (ForeignKey) -> Relación con 'Marca'
+    - categoria (ForeignKey) -> Relación con 'Categoria'
+    - precio (DecimalField)
+    - stock (IntegerField)
+    - activo (BooleanField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+    - imagen (ImageField)
+
+  Modelo: MovimientoInventario
+  --------------------
+    - id (BigAutoField)
+    - producto (ForeignKey) -> Relación con 'Producto'
+    - tipo (CharField)
+    - cantidad (IntegerField)
+    - motivo (CharField)
+    - usuario (ForeignKey) -> Relación con 'Usuario'
+    - creado_en (DateTimeField)
+
+--- App: clientes ---
+
+  Modelo: Cliente
+  --------------------
+    - ventas (ManyToOneRel) -> Relación con 'Venta'
+    - id (BigAutoField)
+    - usuario (OneToOneField) -> Relación con 'Usuario'
+    - nombre (CharField)
+    - email (EmailField)
+    - telefono (CharField)
+    - direccion (CharField)
+    - documento (CharField)
+    - activo (BooleanField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+
+--- App: ventas ---
+
+  Modelo: Venta
+  --------------------
+    - items (ManyToOneRel) -> Relación con 'ItemVenta'
+    - pago (OneToOneRel) -> Relación con 'Pago'
+    - id (BigAutoField)
+    - folio (CharField)
+    - cliente (ForeignKey) -> Relación con 'Cliente'
+    - usuario (ForeignKey) -> Relación con 'Usuario'
+    - estado (CharField)
+    - subtotal (DecimalField)
+    - descuento (DecimalField)
+    - impuestos (DecimalField)
+    - total (DecimalField)
+    - observaciones (CharField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+
+  Modelo: ItemVenta
+  --------------------
+    - id (BigAutoField)
+    - venta (ForeignKey) -> Relación con 'Venta'
+    - producto (ForeignKey) -> Relación con 'Producto'
+    - cantidad (PositiveIntegerField)
+    - precio_unit (DecimalField)
+    - subtotal (DecimalField)
+
+--- App: pagos ---
+
+  Modelo: Pago
+  --------------------
+    - id (BigAutoField)
+    - venta (OneToOneField) -> Relación con 'Venta'
+    - monto (DecimalField)
+    - moneda (CharField)
+    - metodo (CharField)
+    - estado (CharField)
+    - referencia (CharField)
+    - idempotency_key (CharField)
+    - creado_en (DateTimeField)
+    - actualizado_en (DateTimeField)
+    - usuario (ForeignKey) -> Relación con 'Usuario'
+
+--- App: reportes ---
+
+--- App: configuracion ---
+
+  Modelo: Configuracion
+  --------------------
+    - id (BigAutoField)
+    - nombre_banco (CharField)
+    - numero_cuenta (CharField)
+    - nombre_titular (CharField)
+    - documento_titular (CharField)
+    - glosa_qr (CharField)
+
+--- App: analitica ---
+
+--- App: ia ---
+
