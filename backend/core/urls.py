@@ -12,25 +12,25 @@ def root_health(_):
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", root_health),
-    # # OpenAPI
+
+    # OpenAPI
     path("api/esquema/", SpectacularAPIView.as_view(), name="esquema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="esquema"), name="docs"),
 
-    # # Rutas de apps
+    # Rutas de apps
     path("api/cuentas/", include("cuentas.urls")),
     path("api/catalogo/", include("catalogo.urls")),
     path("api/clientes/", include("clientes.urls")),
     path("api/ventas/", include("ventas.urls")),
     path("api/pagos/", include("pagos.urls")),
     path("api/reportes/", include("reportes.urls")),
-    path("api/configuracion/", include("configuracion.urls")),    
+    path("api/configuracion/", include("configuracion.urls")),
     path("api/analitica/", include("analitica.urls")),
-    path("api/auditoria/", include("auditoria.urls")),  # ← esta es la que te falla ahora
+    path("api/auditoria/", include("auditoria.urls")),
     # path("api/ia/", include("ia.urls")),
 
     path("health/", health_check, name="health_check"),
-    
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# ⭐ SERVIR MEDIA TANTO EN DEBUG COMO EN PRODUCCIÓN ⭐
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
