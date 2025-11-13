@@ -27,8 +27,16 @@ _env_hosts = [
     for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
     if h.strip()
 ]
-ALLOWED_HOSTS = list(set(_env_hosts + ["127.0.0.1", "localhost", "0.0.0.0",
-                                       ".elasticbeanstalk.com", ".compute.amazonaws.com"]))
+ALLOWED_HOSTS = list(set(
+    _env_hosts
+    + [
+        "127.0.0.1",
+        "localhost",
+        "0.0.0.0",
+        ".elasticbeanstalk.com",
+        ".compute.amazonaws.com",
+    ]
+))
 
 # Detrás de ALB/ELB (X-Forwarded-Proto/Host). Esencial para que Django sepa su URL pública.
 USE_X_FORWARDED_HOST = True
@@ -63,9 +71,9 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "drf_spectacular",
-    "corsheaders",   
+    "corsheaders",
 
-    #otras apps
+    # otras apps
     "auditoria",
     "catalogo",
     "clientes",
@@ -108,7 +116,6 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        # Si algún día sirves el build de Vite desde Django:
         # "DIRS": [FRONTEND_DIR / "dist"],
         "DIRS": [],
         "APP_DIRS": True,
@@ -136,7 +143,6 @@ DATABASES = {
         "PASSWORD": os.getenv("PGPASSWORD", ""),
         "HOST": os.getenv("PGHOST", "127.0.0.1"),
         "PORT": os.getenv("PGPORT", "5432"),
-        # Para RDS con SSL:
         # "OPTIONS": {"sslmode": os.getenv("DB_SSLMODE", "prefer")},
     }
 }
@@ -152,10 +158,10 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
     "DEFAULT_THROTTLE_CLASSES": [
-      "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
-        "user": "1000/min"  # ajusta
+        "user": "1000/min"
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
@@ -199,15 +205,27 @@ USE_TZ = True
 # Static & Media (WhiteNoise)
 # ================================
 STATIC_URL = "/static/"
-MEDIA_URL = "/media/"
-
 STATIC_ROOT = BASE_DIR / "static"   # destino de collectstatic
+
 MEDIA_ROOT = BASE_DIR / "media"
+
+# ⬇⬇⬇ AQUÍ VIENE EL CAMBIO IMPORTANTE ⬇⬇⬇
+if DEBUG:
+    # En local, rutas relativas normales
+    MEDIA_URL = "/media/"
+else:
+    # En producción, URLs absolutas con HTTPS para evitar Mixed Content
+    # Define BACKEND_DOMAIN en las variables de entorno de EB si quieres cambiarlo
+    BACKEND_DOMAIN = os.getenv(
+        "BACKEND_DOMAIN",
+        "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
+    )
+    MEDIA_URL = f"https://{BACKEND_DOMAIN}/media/"
+# ⬆⬆⬆ FIN CAMBIO IMPORTANTE ⬆⬆⬆
 
 # WhiteNoise: compresión + hash de archivos
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Si quisieras incluir assets del front en dev/CI:
 # STATICFILES_DIRS = [FRONTEND_DIR / "dist"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -227,7 +245,9 @@ EXTRA_FRONTEND = [
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
-CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND)
+CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
+    DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND
+)
 CORS_ALLOW_CREDENTIALS = True
 
 _csrf_from_cors = [
@@ -236,7 +256,9 @@ _csrf_from_cors = [
 _csrf_from_hosts = [
     f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
-CSRF_TRUSTED_ORIGINS = list(set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"]))
+CSRF_TRUSTED_ORIGINS = list(
+    set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"])
+)
 
 # ================================
 # Email y Logging

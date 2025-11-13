@@ -10,7 +10,7 @@ class ApiConfig {
   ///   https://smart-sales-365.com/api
   ///   https://api.miapp.com
   static const String productionBaseUrl =
-      'https://MISERVIDOR.PRODUCCION.com/api'; // <-- CAMBIA SOLO ESTO
+      'https://smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'; // <-- CAMBIA SOLO ESTO
 
   /// 🔵 URL del backend en LOCAL (desarrollo)
   static const String localWebUrl = 'http://localhost:8000/api';
