@@ -3,6 +3,9 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+
+    // 👇 NUEVO: plugin de Google Services (Firebase)
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -26,7 +29,10 @@ android {
 
     defaultConfig {
         applicationId = "com.example.mobile"
-        minSdk = flutter.minSdkVersion
+
+        // 👇 Puedes fijar directamente minSdk 23 para evitar líos
+        minSdk = 23
+
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -34,7 +40,6 @@ android {
 
     buildTypes {
         release {
-            // TODO: agregar firma propia para subir a Play Store.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -44,7 +49,7 @@ flutter {
     source = "../.."
 }
 
-// 👇 nuevo bloque: dependencia de desugaring
 dependencies {
+    // 👇 ya lo tenías, lo dejamos
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
