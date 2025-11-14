@@ -1,34 +1,18 @@
 // lib/config/api_config.dart
 
-import 'package:flutter/foundation.dart';
-
-/// Configuración centralizada de la API.
-/// Solo cambia [productionBaseUrl] cuando generes el APK.
 class ApiConfig {
-  /// 🔵 URL del backend en PRODUCCIÓN
-  /// Ejemplo:
-  ///   https://smart-sales-365.com/api
-  ///   https://api.miapp.com
-  static const String productionBaseUrl =
-      'https://smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'; // <-- CAMBIA SOLO ESTO
+  /// URL del backend en PRODUCCIÓN (pasando por CloudFront)
+  /// Incluye /api al final
+  static const String _defaultBaseUrl =
+      'https://d1098mxiq3rtlj.cloudfront.net/api';
 
-  /// 🔵 URL del backend en LOCAL (desarrollo)
-  static const String localWebUrl = 'http://localhost:8000/api';
-  static const String localEmulatorUrl = 'http://10.0.2.2:8000/api';
+  /// Permite sobreescribir por --dart-define si quisieras
+  static String get _envBaseUrl => const String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: _defaultBaseUrl,
+  );
 
-  /// 🔵 Obtiene automáticamente la URL correcta según plataforma.
-  static String get baseUrl {
-    if (kIsWeb) {
-      // Flutter Web
-      return localWebUrl;
-    } else {
-      // Android (emulador o dispositivo real)
-      return localEmulatorUrl;
-    }
-  }
+  static String get baseUrl => _envBaseUrl;
 
-  /// 🔵 Usar esta para llamar en ambiente de PRODUCCIÓN al generar el APK.
-  /// Ejemplo de uso:
-  /// const apiUrl = ApiConfig.api;
-  static String get api => kReleaseMode ? productionBaseUrl : baseUrl;
+  static String get api => baseUrl;
 }

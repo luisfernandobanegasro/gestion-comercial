@@ -12,7 +12,7 @@ class ApiClient {
 
   /// Construye la URL absoluta a partir de la base de la API + path
   Uri _uri(String path, [Map<String, dynamic>? query]) {
-    return Uri.parse('${ApiConfig.baseUrl}$path').replace(
+    return Uri.parse('${ApiConfig.api}$path').replace(
       queryParameters: query?.map(
         (key, value) => MapEntry(key, value.toString()),
       ),

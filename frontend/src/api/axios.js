@@ -3,7 +3,8 @@ import axios from 'axios'
 import { PATHS } from './paths'
 
 // 1) Construye y EXPORTA la URL base de la API (sin /api al final)
-export const API_BASE = import.meta.env.VITE_API_URL || 'http://smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'
+export const API_BASE = import.meta.env.VITE_API_URL 
+  || 'https://smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`, // -> ej: http://domain.com/api
