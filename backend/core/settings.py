@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")  # lee backend/.env si existe
 
-# Si trabajas monorepo (backend/, frontend/)
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
 # ================================
@@ -21,7 +20,6 @@ FRONTEND_DIR = BASE_DIR.parent / "frontend"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 
-# Hosts permitidos: de env + locales + EB
 _env_hosts = [
     h.strip()
     for h in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
@@ -41,16 +39,12 @@ ALLOWED_HOSTS = list(
     )
 )
 
-# Detrás de ALB/ELB (X-Forwarded-Proto/Host).
+# Detrás de ALB/ELB (por si acaso)
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# Mientras el HTTPS real esté en CloudFront y EB solo use HTTP,
-# no forzamos redirect a HTTPS aquí (evitas líos de redirecciones).
+# ⚠️ SIN HTTPS en EB → NO redirigir a https, NO cookies seguras
 SECURE_SSL_REDIRECT = False
-
-# Cookies marcadas como "secure" solo tienen sentido si Django
-# ve la request como secure; de momento las dejamos en False.
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SAMESITE = "Lax"
@@ -60,28 +54,22 @@ CSRF_COOKIE_SAMESITE = "Lax"
 # Apps instaladas
 # ================================
 INSTALLED_APPS = [
-    # Apps del proyecto (cuentas primero por AUTH_USER_MODEL)
     "cuentas",
 
-    # Django
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
 
-    # WhiteNoise debe ir ANTES de staticfiles
     "whitenoise.runserver_nostatic",
-
     "django.contrib.staticfiles",
 
-    # Terceros
     "rest_framework",
     "django_filters",
     "drf_spectacular",
     "corsheaders",
 
-    # Otras apps
     "auditoria",
     "catalogo",
     "clientes",
@@ -98,12 +86,10 @@ INSTALLED_APPS = [
 # ================================
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    # WhiteNoise justo después de SecurityMiddleware
     "whitenoise.middleware.WhiteNoiseMiddleware",
 
     "django.contrib.sessions.middleware.SessionMiddleware",
 
-    # CORS SIEMPRE antes de CommonMiddleware
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
 
@@ -112,7 +98,6 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 
-    # Middleware propio
     "core.middleware.AuditoriaMiddleware",
 ]
 
@@ -124,7 +109,6 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        # "DIRS": [FRONTEND_DIR / "dist"],  # si algún día sirves el front desde Django
         "DIRS": [],
         "APP_DIRS": True,
         "OPTIONS": {
@@ -216,9 +200,8 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
 MEDIA_ROOT = BASE_DIR / "media"
-MEDIA_URL = "/media/"   # 👈 SIEMPRE SOLO LA RUTA
+MEDIA_URL = "/media/"
 
-# Dominio del backend en producción (EB) – solo para construir URLs absolutas si hace falta
 BACKEND_DOMAIN = os.getenv(
     "BACKEND_DOMAIN",
     "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
@@ -238,31 +221,21 @@ EXTRA_FRONTEND = [
     if o.strip()
 ]
 
-# En producción (DEBUG=0) solo permitimos orígenes definidos;
-# en desarrollo, permitimos todos para simplificar.
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
 CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
     DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND
 )
 CORS_ALLOW_CREDENTIALS = True
 
-# CSRF_TRUSTED_ORIGINS se arma a partir de:
-# - CORS_ALLOWED_ORIGINS (que incluyen CloudFront en producción)
-# - ALLOWED_HOSTS definidos por env (EB, etc.)
 _csrf_from_cors = [
-    o if o.startswith("http") else f"https://{o}"
+    o if o.startswith("http") else f"http://{o}"
     for o in (CORS_ALLOWED_ORIGINS or [])
 ]
 _csrf_from_hosts = [
-    f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
+    f"http://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
-
 CSRF_TRUSTED_ORIGINS = list(
-    set(
-        _csrf_from_cors
-        + _csrf_from_hosts
-        + ["https://*.elasticbeanstalk.com"]
-    )
+    set(_csrf_from_cors + _csrf_from_hosts)
 )
 
 # ================================
