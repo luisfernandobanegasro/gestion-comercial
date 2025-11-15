@@ -45,11 +45,12 @@ ALLOWED_HOSTS = list(
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# ⚠️ Mientras NO tengas HTTPS/443 configurado en EB,
-# NO forzar redirección a HTTPS (evita ERR_CONNECTION_TIMED_OUT)
+# Mientras el HTTPS real esté en CloudFront y EB solo use HTTP,
+# no forzamos redirect a HTTPS aquí (evitas líos de redirecciones).
 SECURE_SSL_REDIRECT = False
 
-# Cookies endurecidas SOLO cuando tengas HTTPS real
+# Cookies marcadas como "secure" solo tienen sentido si Django
+# ve la request como secure; de momento las dejamos en False.
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SAMESITE = "Lax"
@@ -237,12 +238,17 @@ EXTRA_FRONTEND = [
     if o.strip()
 ]
 
+# En producción (DEBUG=0) solo permitimos orígenes definidos;
+# en desarrollo, permitimos todos para simplificar.
 CORS_ALLOW_ALL_ORIGINS = True if DEBUG else False
 CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
     DEFAULT_FRONTEND_ORIGINS + EXTRA_FRONTEND
 )
 CORS_ALLOW_CREDENTIALS = True
 
+# CSRF_TRUSTED_ORIGINS se arma a partir de:
+# - CORS_ALLOWED_ORIGINS (que incluyen CloudFront en producción)
+# - ALLOWED_HOSTS definidos por env (EB, etc.)
 _csrf_from_cors = [
     o if o.startswith("http") else f"https://{o}"
     for o in (CORS_ALLOWED_ORIGINS or [])
@@ -250,11 +256,12 @@ _csrf_from_cors = [
 _csrf_from_hosts = [
     f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
+
 CSRF_TRUSTED_ORIGINS = list(
     set(
         _csrf_from_cors
         + _csrf_from_hosts
-        + ["https://smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com"]
+        + ["https://*.elasticbeanstalk.com"]
     )
 )
 
