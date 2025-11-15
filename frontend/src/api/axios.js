@@ -3,7 +3,7 @@ import axios from 'axios'
 import { PATHS } from './paths'
 
 export const API_BASE = import.meta.env.VITE_API_URL 
-  || 'http://smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'
+  || 'https://smart-sales.eba-n3j3inxe.us-east-1.elasticbeanstalk.com'
 
 const api = axios.create({
   baseURL: `${API_BASE}/api`,
