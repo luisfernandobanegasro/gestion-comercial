@@ -5,6 +5,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.http import JsonResponse
 from .health import health_check
+from urllib.parse import urlparse
 
 def root_health(_):
     return JsonResponse({"service": "smart-sales-365-api", "status": "ok"})
@@ -33,4 +34,8 @@ urlpatterns = [
 ]
 
 # ⭐ SERVIR MEDIA TANTO EN DEBUG COMO EN PRODUCCIÓN ⭐
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+media_prefix = settings.MEDIA_URL
+if media_prefix.startswith("http"):
+    media_prefix = urlparse(media_prefix).path or "/media/"
+
+urlpatterns += static(media_prefix, document_root=settings.MEDIA_ROOT)
