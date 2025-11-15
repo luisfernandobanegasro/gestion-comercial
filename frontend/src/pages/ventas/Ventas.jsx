@@ -6,9 +6,15 @@ import { PATHS } from '../../api/paths'
 import ListaVentas from './ListaVentas'
 import { Plus, Minus, Trash2, ShoppingCart } from 'lucide-react'
 
+// 👇 ajusta la ruta si tu AuthProvider está en otro lado
+import { useAuth } from '../../providers/AuthProvider'
+
 function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   const navigate = useNavigate()
   const { id: ventaId } = useParams()
+  const { user } = useAuth()
+  const esCliente = !!user?.nombres_roles?.includes('Cliente')
+
   const [productos, setProductos] = useState([])
   const [buscar, setBuscar] = useState('')
   const [filtroCategoria, setFiltroCategoria] = useState('')
@@ -40,7 +46,21 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
       try {
         // Clientes
         const c = await api.get(`${PATHS.clientes}?ordering=nombre`)
-        setClientes(c.data?.results || c.data || [])
+        const lista = c.data?.results || c.data || []
+        setClientes(lista)
+
+        // 🔵 Si el usuario logueado tiene rol "Cliente",
+        //    autoseleccionamos su propio registro de Cliente
+        if (esCliente && user?.id) {
+          const miCliente = lista.find(cli =>
+            cli.usuario === user.id ||
+            cli.usuario_id === user.id ||
+            cli.usuario?.id === user.id
+          )
+          if (miCliente) {
+            setCliente(String(miCliente.id))
+          }
+        }
       } catch {
         setClientes([])
       }
@@ -66,7 +86,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         try {
           const res = await api.get(`${PATHS.ventas.root}${ventaId}/`)
           const v = res.data
-          setCliente(v.cliente)
+          setCliente(String(v.cliente))
           setCarrito(
             v.items.map(it => ({
               producto: it.producto,
@@ -83,7 +103,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         setLoadingVenta(false)
       }
     })()
-  }, [isEditing, ventaId])
+  }, [esCliente, isEditing, user?.id, ventaId])
 
   // Lista filtrada de productos (buscador + filtros + solo ofertas)
   const list = useMemo(() => {
@@ -291,18 +311,32 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
               className="form-row"
               style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
             >
-              <select
-                value={cliente}
-                onChange={e => setCliente(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="">— Selecciona un cliente —</option>
-                {(clientes || []).map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.nombre}
-                  </option>
-                ))}
-              </select>
+              {esCliente ? (
+                // 👤 Cliente logueado → solo ve su propio nombre, no puede cambiarlo
+                <input
+                  type="text"
+                  value={
+                    (clientes || []).find(c => String(c.id) === String(cliente))
+                      ?.nombre || 'Mi cuenta'
+                  }
+                  disabled
+                  style={{ flex: 1, background: 'var(--surface)', opacity: 0.8 }}
+                />
+              ) : (
+                // 👨‍💼 Admin / empleado → puede elegir cualquier cliente
+                <select
+                  value={cliente}
+                  onChange={e => setCliente(e.target.value)}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">— Selecciona un cliente —</option>
+                  {(clientes || []).map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
 
