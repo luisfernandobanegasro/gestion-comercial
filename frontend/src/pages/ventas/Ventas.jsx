@@ -6,14 +6,28 @@ import { PATHS } from '../../api/paths'
 import ListaVentas from './ListaVentas'
 import { Plus, Minus, Trash2, ShoppingCart } from 'lucide-react'
 
-// 👇 ajusta la ruta si tu AuthProvider está en otro lado
-import { useAuth } from '../../providers/AuthProvider'
+// =========================
+// Helper: obtener user_id del JWT
+// =========================
+function getUserIdFromAccessToken() {
+  try {
+    const token = localStorage.getItem('access_token')
+    if (!token) return null
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const payloadJson = atob(payloadBase64)
+    const payload = JSON.parse(payloadJson)
+    // SimpleJWT por defecto usa "user_id"
+    return payload.user_id || payload.id || null
+  } catch {
+    return null
+  }
+}
 
 function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   const navigate = useNavigate()
   const { id: ventaId } = useParams()
-  const { user } = useAuth()
-  const esCliente = !!user?.nombres_roles?.includes('Cliente')
 
   const [productos, setProductos] = useState([])
   const [buscar, setBuscar] = useState('')
@@ -29,6 +43,10 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   const [cliente, setCliente] = useState('')
   const [clientes, setClientes] = useState([])
   const [loadingVenta, setLoadingVenta] = useState(isEditing)
+
+  // si encontramos un Cliente para el usuario actual → true
+  const [esCliente, setEsCliente] = useState(false)
+  const [currentUserId] = useState(() => getUserIdFromAccessToken())
 
   // ref para hacer scroll al carrito (CTA móvil)
   const carritoRef = useRef(null)
@@ -49,16 +67,17 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         const lista = c.data?.results || c.data || []
         setClientes(lista)
 
-        // 🔵 Si el usuario logueado tiene rol "Cliente",
-        //    autoseleccionamos su propio registro de Cliente
-        if (esCliente && user?.id) {
+        // 🔵 Si el usuario tiene perfil de Cliente
+        // buscamos cliente.usuario == currentUserId
+        if (currentUserId) {
           const miCliente = lista.find(cli =>
-            cli.usuario === user.id ||
-            cli.usuario_id === user.id ||
-            cli.usuario?.id === user.id
+            cli.usuario === currentUserId ||
+            cli.usuario_id === currentUserId ||
+            cli.usuario?.id === currentUserId
           )
           if (miCliente) {
             setCliente(String(miCliente.id))
+            setEsCliente(true)
           }
         }
       } catch {
@@ -92,7 +111,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
               producto: it.producto,
               nombre: it.producto_nombre,
               cantidad: it.cantidad,
-              // aquí respetamos el precio que ya tiene la venta
+              // respetamos el precio de la venta
               precio_unit: Number(it.precio_unit)
             }))
           )
@@ -103,28 +122,22 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         setLoadingVenta(false)
       }
     })()
-  }, [esCliente, isEditing, user?.id, ventaId])
+  }, [isEditing, ventaId, currentUserId])
 
   // Lista filtrada de productos (buscador + filtros + solo ofertas)
   const list = useMemo(() => {
     let data = productos
 
-    // Filtro por categoría
     if (filtroCategoria) {
       data = data.filter(p => String(p.categoria) === String(filtroCategoria))
     }
-
-    // Filtro por marca
     if (filtroMarca) {
       data = data.filter(p => String(p.marca) === String(filtroMarca))
     }
-
-    // Solo productos que tienen oferta activa
     if (soloOfertas) {
       data = data.filter(p => !!p.oferta_activa)
     }
 
-    // Buscador de texto
     const q = buscar.trim().toLowerCase()
     if (q) {
       data = data.filter(x =>
@@ -138,7 +151,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
     return data
   }, [productos, buscar, filtroCategoria, filtroMarca, soloOfertas])
 
-  // ➜ Usa precio_final si existe, si no el precio normal
+  // Usa precio_final si existe, si no el normal
   const add = useCallback((prod, cantidad = 1) => {
     const precioUnit = prod.precio_final != null
       ? Number(prod.precio_final)
@@ -162,7 +175,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         }
       ]
     })
-    setProductoActivo(null) // cerrar modal
+    setProductoActivo(null)
   }, [])
 
   const setCant = (i, v) =>
@@ -198,7 +211,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
       items: carrito.map(it => ({
         producto: it.producto,
         cantidad: it.cantidad,
-        // ➜ aquí ya va el precio con descuento (si lo tenía)
         precio_unit: it.precio_unit
       }))
     }
@@ -312,7 +324,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
               style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
             >
               {esCliente ? (
-                // 👤 Cliente logueado → solo ve su propio nombre, no puede cambiarlo
+                // Cliente logueado → ve solo su propio nombre
                 <input
                   type="text"
                   value={
@@ -323,7 +335,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
                   style={{ flex: 1, background: 'var(--surface)', opacity: 0.8 }}
                 />
               ) : (
-                // 👨‍💼 Admin / empleado → puede elegir cualquier cliente
+                // Admin / empleado → puede elegir cualquier cliente
                 <select
                   value={cliente}
                   onChange={e => setCliente(e.target.value)}
@@ -367,7 +379,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
                       alt={p.nombre}
                     />
 
-                    {/* Etiqueta de oferta si aplica */}
                     {tieneDescuento && (
                       <span className="badge-oferta">-{descuento}%</span>
                     )}
@@ -377,7 +388,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
                       {p.marca_nombre || 'Sin marca'} · {p.categoria_nombre}
                     </div>
 
-                    {/* Precio mostrando descuento si aplica */}
                     <div style={{ marginTop: 4 }}>
                       {tieneDescuento ? (
                         <>
@@ -454,7 +464,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         </div>
       </div>
 
-      {/* CTA móvil fijo (aparece si hay ítems en carrito) */}
+      {/* CTA móvil fijo */}
       {carrito.length > 0 && (
         <div className="venta-cta">
           <div className="cta-left">
@@ -511,7 +521,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
           border-radius:999px;
         }
 
-        /* Stepper de cantidad dentro de la tabla */
         .qty-stepper {
           display: inline-flex; align-items: center; gap: 6px;
           border: 1px solid var(--border); border-radius: 8px; padding: 2px;
@@ -524,15 +533,12 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
           background: transparent; color: var(--text); font-weight: 600;
           font-variant-numeric: tabular-nums; padding: 0 6px;
         }
-        /* Quitar flechitas del input number */
         .qty-stepper .input-cantidad::-webkit-outer-spin-button,
         .qty-stepper .input-cantidad::-webkit-inner-spin-button{ -webkit-appearance: none; margin: 0; }
         .qty-stepper .input-cantidad[type="number"]{ -moz-appearance: textfield; appearance: textfield; }
 
-        /* Asegura que la celda de cantidad no recorte el contenido */
         .carrito-card td.col-cant{ overflow: visible; white-space: nowrap; text-overflow: initial; }
 
-        /* CTA móvil fijo al pie */
         .venta-cta{
           position: fixed; left: 0; right: 0; bottom: 0;
           display: flex; gap: 12px; align-items: center; justify-content: space-between;
