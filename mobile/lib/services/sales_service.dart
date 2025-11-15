@@ -1,6 +1,5 @@
 // lib/services/sales_service.dart
-
-import 'package:flutter/foundation.dart'; // Para kIsWeb
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:mobile/widgets/qr_payment_dialog.dart';
@@ -8,24 +7,33 @@ import '../models/sale.dart';
 import '../providers/cart_provider.dart';
 import 'api_client.dart';
 
-/// Servicio para gestionar todas las operaciones relacionadas con ventas y pagos.
 class SalesService {
-  /// Obtiene el historial de ventas del usuario autenticado desde el backend.
+  /// Historial de ventas del usuario autenticado
   Future<List<Sale>> fetchMySales() async {
     final data = await apiClient.get('/ventas/ventas/');
-    final list = data as List;
-    return list
+
+    // Soporta lista simple o respuesta paginada { results: [...] }
+    final List rawList;
+    if (data is List) {
+      rawList = data;
+    } else if (data is Map && data['results'] is List) {
+      rawList = data['results'] as List;
+    } else {
+      throw Exception('Formato inesperado al leer /ventas/ventas/');
+    }
+
+    return rawList
         .map((item) => Sale.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 
-  /// Obtiene el detalle completo de una venta específica, incluyendo sus items.
+  /// Detalle de una venta
   Future<Sale> fetchSaleDetail(int saleId) async {
     final data = await apiClient.get('/ventas/ventas/$saleId/');
     return Sale.fromJson(data as Map<String, dynamic>);
   }
 
-  /// Crea una venta en estado 'pendiente' en el backend a partir del carrito actual.
+  /// Crea una venta pendiente desde el carrito actual
   Future<Sale> createPendingSaleFromCart(CartProvider cart) async {
     final items =
         cart.items
@@ -43,35 +51,27 @@ class SalesService {
     return Sale.fromJson(data as Map<String, dynamic>);
   }
 
-  /// Confirma una venta en el backend. Se usa para pagos en efectivo o QR.
-  /// El backend se encarga de cambiar el estado de la venta y actualizar el stock.
+  /// Confirma el pago de una venta (efectivo / QR ya pagado)
   Future<void> confirmSalePayment(int saleId) async {
-    // Coincide con el @action confirmar_pago del VentaViewSet
     await apiClient.post('/ventas/ventas/$saleId/confirmar_pago/');
   }
 
-  /// Ejecuta el flujo completo para pagar con tarjeta de crédito/débito usando Stripe.
-  ///
-  /// IMPORTANTE:
-  /// - En Android/iOS usa Stripe PaymentSheet.
-  /// - En Web lanza una excepción explicando que no está disponible.
-  /// - La confirmación final se hace contra /pagos/stripe/confirmar/ en tu backend.
+  /// Pago con tarjeta usando Stripe PaymentSheet
   Future<void> payWithCardStripe(BuildContext context, Sale sale) async {
-    // 🔒 Protección: Stripe PaymentSheet NO funciona en Web.
     if (kIsWeb) {
       throw Exception(
         'El pago con tarjeta solo está disponible en la app móvil (Android/iOS).',
       );
     }
 
-    // 1. Crear el PaymentIntent en nuestro backend.
+    // 👇 Aquí tu backend debe crear el PaymentIntent usando el total de la venta
+    // (sale.total). Desde Flutter solo enviamos el ID de la venta.
     final response = await apiClient.post(
       '/pagos/stripe/intent/',
       body: {'venta_id': sale.id},
     );
 
     final clientSecret = response['clientSecret'] as String?;
-
     if (clientSecret == null || clientSecret.isEmpty) {
       throw Exception(
         'El servidor no proporcionó un clientSecret válido para el pago.',
@@ -80,11 +80,10 @@ class SalesService {
 
     if (!context.mounted) return;
 
-    // 2. Inicializar el formulario de pago de Stripe con el clientSecret.
     await Stripe.instance.initPaymentSheet(
       paymentSheetParameters: SetupPaymentSheetParameters(
         paymentIntentClientSecret: clientSecret,
-        merchantDisplayName: 'SmartSales365', // Nombre de tu negocio
+        merchantDisplayName: 'SmartSales365',
         style:
             Theme.of(context).brightness == Brightness.dark
                 ? ThemeMode.dark
@@ -92,34 +91,42 @@ class SalesService {
       ),
     );
 
-    // 3. Mostrar el formulario al usuario. Stripe maneja la confirmación con sus servidores.
     await Stripe.instance.presentPaymentSheet();
 
-    // 4. Si `presentPaymentSheet` no lanzó una excepción, el pago fue exitoso
-    //    en Stripe. Ahora confirmamos el pago en nuestro backend de pagos,
-    //    que a su vez marcará la venta como pagada, etc.
+    // Confirmar en el backend que el pago de esa venta se completó
     await apiClient.post(
       '/pagos/stripe/confirmar/',
       body: {'venta_id': sale.id},
     );
   }
 
-  /// Ejecuta el flujo completo para pagar con un código QR.
+  /// Pago con QR
   Future<void> payWithQr(BuildContext context, Sale sale) async {
-    // 1. Obtener datos de configuración del backend (datos del banco, etc.).
-    final config = await apiClient.get('/configuracion/');
+    // Puede venir como Map o como {results:[...]} / lista
+    final cfg = await apiClient.get('/configuracion/');
 
-    // 2. Preparar el contenido (payload) para el código QR.
+    Map<String, dynamic> config;
+    if (cfg is Map<String, dynamic>) {
+      config = cfg;
+    } else if (cfg is Map &&
+        cfg['results'] is List &&
+        cfg['results'].isNotEmpty) {
+      config = cfg['results'][0] as Map<String, dynamic>;
+    } else if (cfg is List && cfg.isNotEmpty) {
+      config = cfg[0] as Map<String, dynamic>;
+    } else {
+      throw Exception('Formato inesperado de /configuracion/');
+    }
+
     final qrPayload = {
       'folio': sale.folio,
       'monto': sale.total,
-      'moneda': "BOB",
-      'concepto': config['glosa_qr'] ?? "Pago de productos",
+      'moneda': 'BOB',
+      'concepto': config['glosa_qr'] ?? 'Pago de productos',
     };
 
     if (!context.mounted) return;
 
-    // 3. Mostrar un diálogo que contiene el widget del QR.
     final confirmed = await showDialog<bool>(
       context: context,
       builder:
@@ -130,12 +137,10 @@ class SalesService {
           ),
     );
 
-    // 4. Si el usuario presionó "He realizado el pago", confirmamos la venta.
     if (confirmed == true) {
       await confirmSalePayment(sale.id);
     }
   }
 }
 
-/// Instancia global del servicio para un acceso fácil desde cualquier parte de la app.
 final salesService = SalesService();

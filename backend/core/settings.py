@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Paths base y .env
 # ================================
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")  # lee backend/.env si existe
+load_dotenv(BASE_DIR / ".env")
 
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 
@@ -39,11 +39,11 @@ ALLOWED_HOSTS = list(
     )
 )
 
-# Detrás de ALB/ELB (por si acaso)
+# Para ALB/ELB
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# ⚠️ SIN HTTPS en EB → NO redirigir a https, NO cookies seguras
+# SIN HTTPS obligatoria en EB
 SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
@@ -79,6 +79,8 @@ INSTALLED_APPS = [
     "configuracion",
     "analitica",
     "ia",
+
+    "storages",  # S3
 ]
 
 # ================================
@@ -125,7 +127,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "core.wsgi.application"
 
 # ================================
-# Base de datos (PostgreSQL)
+# Base de datos
 # ================================
 DATABASES = {
     "default": {
@@ -135,12 +137,11 @@ DATABASES = {
         "PASSWORD": os.getenv("PGPASSWORD", ""),
         "HOST": os.getenv("PGHOST", "127.0.0.1"),
         "PORT": os.getenv("PGPORT", "5432"),
-        # "OPTIONS": {"sslmode": os.getenv("DB_SSLMODE", "prefer")},
     }
 }
 
 # ================================
-# Autenticación / DRF / JWT / OpenAPI
+# Autenticación / JWT / DRF
 # ================================
 AUTH_USER_MODEL = "cuentas.Usuario"
 
@@ -149,12 +150,6 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "user": "1000/min",
-    },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
@@ -164,15 +159,6 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "AUTH_HEADER_TYPES": ("Bearer",),
-}
-
-SPECTACULAR_SETTINGS = {
-    "TITLE": "SmartSales365 API",
-    "DESCRIPTION": "API del Sistema de Gestión Comercial con Django + PostgreSQL",
-    "VERSION": "1.0.0",
-    "SERVE_INCLUDE_SCHEMA": False,
-    "SECURITY": [{"bearerAuth": []}],
-    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 # ================================
@@ -194,16 +180,42 @@ USE_I18N = True
 USE_TZ = True
 
 # ================================
-# Static & Media (WhiteNoise)
+# Static y Media
 # ================================
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
-MEDIA_ROOT = BASE_DIR / "media"
-# En local usará /media/, en producción usará el CloudFront que le pongas en .env
-MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
+# ======== S3 para Media =========
+USE_S3_MEDIA = os.getenv("USE_S3_MEDIA", "0" if DEBUG else "1") == "1"
 
-# Dominio del backend SIN protocolo (solo host)
+if USE_S3_MEDIA:
+
+    AWS_STORAGE_BUCKET_NAME = os.getenv(
+        "AWS_STORAGE_BUCKET_NAME",
+        "frontend-product-ef",        # 👈 TU BUCKET REAL
+    )
+
+    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
+
+    AWS_S3_CUSTOM_DOMAIN = os.getenv(
+        "AWS_S3_CUSTOM_DOMAIN",
+        "d1098mxiq3rtlj.cloudfront.net",  # 👈 TU CLOUDFRONT REAL
+    )
+
+    AWS_MEDIA_LOCATION = os.getenv("AWS_MEDIA_LOCATION", "media")
+
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+
+    MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_MEDIA_LOCATION}/"
+    MEDIA_ROOT = None
+
+else:
+    MEDIA_ROOT = BASE_DIR / "media"
+    MEDIA_URL = "/media/"
+
+# ================================
+# Backend domain
+# ================================
 BACKEND_DOMAIN = os.getenv(
     "BACKEND_DOMAIN",
     "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
@@ -229,7 +241,9 @@ CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
 )
 CORS_ALLOW_CREDENTIALS = True
 
-# Construimos CSRF_TRUSTED_ORIGINS pensando en http y https
+# ================================
+# CSRF trusted origins
+# ================================
 _csrf_from_cors = []
 for o in (CORS_ALLOWED_ORIGINS or []):
     if o.startswith("http"):

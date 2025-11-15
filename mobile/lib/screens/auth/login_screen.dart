@@ -1,8 +1,10 @@
 // lib/screens/auth/login_screen.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../providers/auth_provider.dart';
 import '../home/home_screen.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,6 +17,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   String _user = '';
   String _pass = '';
+  bool _showPass = false;
 
   @override
   Widget build(BuildContext context) {
@@ -46,6 +49,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         labelText: 'Usuario',
                         prefixIcon: Icon(Icons.person_outline),
                       ),
+                      textInputAction: TextInputAction.next,
                       onSaved: (v) => _user = v!.trim(),
                       validator:
                           (v) =>
@@ -55,11 +59,20 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Contraseña',
-                        prefixIcon: Icon(Icons.lock_outline),
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _showPass
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                          ),
+                          onPressed:
+                              () => setState(() => _showPass = !_showPass),
+                        ),
                       ),
-                      obscureText: true,
+                      obscureText: !_showPass,
                       onSaved: (v) => _pass = v!.trim(),
                       validator:
                           (v) =>
@@ -99,9 +112,26 @@ class _LoginScreenState extends State<LoginScreen> {
                                 },
                         child:
                             auth.loading
-                                ? const CircularProgressIndicator()
+                                ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
                                 : const Text('Ingresar'),
                       ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const RegisterScreen(),
+                          ),
+                        );
+                      },
+                      child: const Text('¿No tienes cuenta? Crear cuenta'),
                     ),
                   ],
                 ),
