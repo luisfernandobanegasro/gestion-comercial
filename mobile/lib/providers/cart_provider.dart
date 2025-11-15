@@ -8,12 +8,16 @@ import '../models/product.dart';
 class CartProvider extends ChangeNotifier {
   final List<CartItem> _items = [];
 
+  /// Lista inmodificable de ítems en el carrito.
   List<CartItem> get items => List.unmodifiable(_items);
 
+  /// Monto total del carrito.
   double get total => _items.fold(0.0, (sum, item) => sum + item.subtotal);
 
+  /// Cantidad total de unidades (para el badge del carrito).
   int get totalItems => _items.fold(0, (sum, item) => sum + item.quantity);
 
+  /// Indica si el carrito está vacío.
   bool get isEmpty => _items.isEmpty;
 
   /// Agrega un producto al carrito. Si ya existe, aumenta la cantidad.
@@ -33,7 +37,7 @@ class CartProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Disminuye la cantidad de un producto (por compatibilidad con voice_provider).
+  /// Disminuye la cantidad de un producto (usado también por voice_provider).
   /// Si la cantidad llega a 0, elimina el producto del carrito.
   void removeOne(Product product) {
     final index = _items.indexWhere((e) => e.product.id == product.id);
@@ -69,6 +73,7 @@ class CartProvider extends ChangeNotifier {
     }
   }
 
+  /// Limpia completamente el carrito.
   void clear() {
     _items.clear();
     notifyListeners();

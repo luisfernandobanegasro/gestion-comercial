@@ -1,15 +1,12 @@
-// lib/screens/home/catalog_screen.dart
-
 import 'package:flutter/material.dart';
+import 'package:mobile/providers/cart_provider.dart';
+import 'package:mobile/providers/voice_provider.dart';
+import 'package:mobile/services/product_service.dart';
+import 'package:mobile/widgets/empty_state.dart';
+import 'package:mobile/widgets/product_card.dart';
+import 'package:mobile/widgets/voice_input_panel.dart';
 import 'package:provider/provider.dart';
-
 import '../../models/product.dart';
-import '../../providers/cart_provider.dart';
-import '../../providers/voice_provider.dart';
-import '../../services/product_service.dart';
-import '../../widgets/empty_state.dart';
-import '../../widgets/product_card.dart';
-import '../../widgets/primary_button.dart';
 
 class CatalogScreen extends StatefulWidget {
   const CatalogScreen({super.key});
@@ -23,24 +20,11 @@ class _CatalogScreenState extends State<CatalogScreen> {
   bool _loading = true;
   String? _error;
 
-  // 🔎 Búsqueda & filtros
   String _searchText = '';
   String? _selectedBrand;
   String? _selectedCategory;
   List<String> _brands = [];
   List<String> _categories = [];
-
-  /// Muestra el SnackBar con el último comando de voz,
-  /// verificando que el widget siga montado para evitar errores.
-  void _showVoiceSnack(VoiceProvider voice) {
-    if (!mounted) return;
-    final txt = voice.lastText.trim();
-    if (txt.isEmpty) return;
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Comando procesado: "$txt"')));
-  }
 
   @override
   void initState() {
@@ -60,8 +44,6 @@ class _CatalogScreenState extends State<CatalogScreen> {
       if (!mounted) return;
       setState(() {
         _products = items;
-
-        // Construimos listas de marcas y categorías para los dropdowns
         _brands =
             _products
                 .where((p) => (p.brandName ?? '').isNotEmpty)
@@ -69,7 +51,6 @@ class _CatalogScreenState extends State<CatalogScreen> {
                 .toSet()
                 .toList()
               ..sort();
-
         _categories =
             _products
                 .where((p) => (p.categoryName ?? '').isNotEmpty)
@@ -91,168 +72,164 @@ class _CatalogScreenState extends State<CatalogScreen> {
     }
   }
 
-  /// Aplica búsqueda por nombre y filtros de marca/categoría
   List<Product> _filteredProducts() {
     return _products.where((p) {
       final matchesSearch =
           _searchText.isEmpty ||
           p.name.toLowerCase().contains(_searchText.toLowerCase());
-
       final matchesBrand =
           _selectedBrand == null || p.brandName == _selectedBrand;
-
       final matchesCategory =
           _selectedCategory == null || p.categoryName == _selectedCategory;
-
       return matchesSearch && matchesBrand && matchesCategory;
     }).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      bottomSheet: const VoiceInputPanel(),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Título
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Catálogo de Productos',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            _buildFilters(),
+            Expanded(child: _buildGridContent()),
+          ],
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed:
+            _products.isEmpty
+                ? null
+                : () {
+                  final cart = context.read<CartProvider>();
+                  final voice = context.read<VoiceProvider>();
+                  voice.activateAndStartListening(cart, _products);
+                },
+        icon: const Icon(Icons.mic),
+        label: const Text('Comprar por voz'),
+      ),
+    );
   }
 
   Widget _buildFilters() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Column(
-        children: [
-          // Buscador por nombre
-          TextField(
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              labelText: 'Buscar producto',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            onChanged: (value) {
-              setState(() {
-                _searchText = value;
-              });
-            },
-          ),
-          const SizedBox(height: 8),
-          Row(
+      child: Card(
+        elevation: 1,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: Column(
             children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  value: _selectedBrand,
+              // Buscador
+              TextField(
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search),
+                  hintText: 'Buscar producto',
                   isDense: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Marca',
-                    border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.grey.shade100,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide.none,
                   ),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Todas')),
-                    ..._brands.map(
-                      (b) => DropdownMenuItem(value: b, child: Text(b)),
-                    ),
-                  ],
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedBrand = value;
-                    });
-                  },
                 ),
+                onChanged: (value) => setState(() => _searchText = value),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  value: _selectedCategory,
-                  isDense: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Categoría',
-                    border: OutlineInputBorder(),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String?>(
+                      value: _selectedBrand,
+                      isDense: true,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: 'Marca',
+                        isDense: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('Todas'),
+                        ),
+                        ..._brands.map(
+                          (b) => DropdownMenuItem<String?>(
+                            value: b,
+                            child: Text(b),
+                          ),
+                        ),
+                      ],
+                      onChanged:
+                          (value) => setState(() => _selectedBrand = value),
+                    ),
                   ),
-                  items: [
-                    const DropdownMenuItem(value: null, child: Text('Todas')),
-                    ..._categories.map(
-                      (c) => DropdownMenuItem(value: c, child: Text(c)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropdownButtonFormField<String?>(
+                      value: _selectedCategory,
+                      isDense: true,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: 'Categoría',
+                        isDense: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('Todas'),
+                        ),
+                        ..._categories.map(
+                          (c) => DropdownMenuItem<String?>(
+                            value: c,
+                            child: Text(c),
+                          ),
+                        ),
+                      ],
+                      onChanged:
+                          (value) => setState(() => _selectedCategory = value),
                     ),
-                  ],
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedCategory = value;
-                    });
-                  },
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final voice = context.watch<VoiceProvider>();
-
-    return Column(
-      children: [
-        // Header
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Catálogo',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-                ),
-              ),
-              IconButton(
-                iconSize: 32,
-                icon: Icon(
-                  voice.isListening ? Icons.mic : Icons.mic_none,
-                  color: voice.isListening ? Colors.red : Colors.black54,
-                ),
-                onPressed:
-                    _products.isEmpty
-                        ? null
-                        : () {
-                          final cart = context.read<CartProvider>();
-                          if (voice.isListening) {
-                            voice.stop();
-                          } else {
-                            voice.startListening(
-                              cart,
-                              _products,
-                              () => _showVoiceSnack(voice),
-                            );
-                          }
-                        },
-                tooltip: 'Comprar por voz',
+                  ),
+                ],
               ),
             ],
           ),
         ),
-        if (voice.lastText.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              'Último comando: ${voice.lastText}',
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        const SizedBox(height: 8),
-
-        // 🔎 Filtros
-        _buildFilters(),
-
-        // Body
-        Expanded(child: _buildBody(context)),
-      ],
+      ),
     );
   }
 
-  Widget _buildBody(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
+  Widget _buildGridContent() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
 
     if (_error != null) {
       return EmptyState(
         icon: Icons.error_outline,
-        title: 'Ocurrió un error al cargar los productos',
+        title: 'Ocurrió un error',
         message: _error,
         actionLabel: 'Reintentar',
         onAction: _load,
@@ -262,20 +239,17 @@ class _CatalogScreenState extends State<CatalogScreen> {
     if (_products.isEmpty) {
       return const EmptyState(
         icon: Icons.inventory_2_outlined,
-        title: 'No hay productos disponibles',
-        message:
-            'Cuando se registren productos en el catálogo aparecerán aquí.',
+        title: 'No hay productos',
+        message: 'Cuando se registren productos aparecerán aquí.',
       );
     }
 
-    final cart = context.watch<CartProvider>();
     final filtered = _filteredProducts();
-
     if (filtered.isEmpty) {
       return const EmptyState(
         icon: Icons.search_off_outlined,
         title: 'Sin resultados',
-        message: 'No se encontraron productos con esos filtros.',
+        message: 'No hay productos que coincidan con los filtros.',
       );
     }
 
@@ -283,32 +257,30 @@ class _CatalogScreenState extends State<CatalogScreen> {
       onRefresh: _load,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          // 2 columnas en móviles, 3 o 4 en pantallas más grandes
           final crossAxisCount =
               constraints.maxWidth > 900
                   ? 4
-                  : constraints.maxWidth > 600
-                  ? 3
-                  : 2;
+                  : (constraints.maxWidth > 600 ? 3 : 2);
 
           return GridView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
             itemCount: filtered.length,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: crossAxisCount,
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
-              childAspectRatio: 0.72,
+              childAspectRatio: 0.7,
             ),
             itemBuilder: (context, index) {
               final product = filtered[index];
               return ProductCard(
                 product: product,
                 onAddToCart: () {
-                  cart.add(product);
+                  context.read<CartProvider>().add(product);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('${product.name} agregado al carrito'),
+                      duration: const Duration(seconds: 1),
                     ),
                   );
                 },
@@ -323,7 +295,6 @@ class _CatalogScreenState extends State<CatalogScreen> {
 
   void _showProductDetail(BuildContext context, Product product) {
     final cart = context.read<CartProvider>();
-    int quantity = 1;
 
     showModalBottomSheet(
       context: context,
@@ -331,178 +302,87 @@ class _CatalogScreenState extends State<CatalogScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (context) {
+      builder: (modalContext) {
         return Padding(
           padding: EdgeInsets.only(
             left: 16,
             right: 16,
             top: 16,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+            bottom: MediaQuery.of(modalContext).viewInsets.bottom + 16,
           ),
-          child: StatefulBuilder(
-            builder: (context, setModalState) {
-              final hasDiscount = product.hasDiscount;
-
-              return SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          product.name,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Navigator.of(context).pop(),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
-                      child:
-                          product.imageUrl == null
-                              ? Container(
-                                height: 180,
-                                color: Colors.grey.shade100,
-                                child: const Center(
-                                  child: Icon(
-                                    Icons.inventory_2_outlined,
-                                    size: 40,
-                                    color: Colors.black26,
-                                  ),
-                                ),
-                              )
-                              : Image.network(
-                                product.imageUrl!,
-                                height: 200,
-                                fit: BoxFit.cover,
-                                errorBuilder:
-                                    (_, __, ___) => Container(
-                                      height: 180,
-                                      color: Colors.grey.shade100,
-                                      child: const Center(
-                                        child: Icon(
-                                          Icons.inventory_2_outlined,
-                                          size: 40,
-                                          color: Colors.black26,
-                                        ),
-                                      ),
-                                    ),
-                              ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    if (hasDiscount) ...[
-                      Text(
-                        'Precio original: Bs. ${product.price.toStringAsFixed(2)}',
+                    Expanded(
+                      child: Text(
+                        product.name,
                         style: const TextStyle(
-                          decoration: TextDecoration.lineThrough,
-                          color: Colors.black45,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Precio oferta: Bs. ${product.displayPrice.toStringAsFixed(2)}',
-                        style: const TextStyle(
+                          fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: Colors.redAccent,
                         ),
                       ),
-                    ] else
-                      Text(
-                        'Precio: Bs. ${product.displayPrice.toStringAsFixed(2)}',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-
-                    const SizedBox(height: 4),
-                    Text(
-                      'Stock disponible: ${product.stock}',
-                      style: const TextStyle(color: Colors.black54),
                     ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Descripción',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      product.sku?.isNotEmpty == true
-                          ? 'Código: ${product.sku}'
-                          : 'Este producto aún no tiene una descripción detallada.',
-                      style: const TextStyle(color: Colors.black87),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Text(
-                          'Cantidad:',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(width: 12),
-                        Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: Colors.grey.shade300),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.remove),
-                                onPressed:
-                                    quantity > 1
-                                        ? () {
-                                          setModalState(() {
-                                            quantity--;
-                                          });
-                                        }
-                                        : null,
-                              ),
-                              Text('$quantity'),
-                              IconButton(
-                                icon: const Icon(Icons.add),
-                                onPressed: () {
-                                  setModalState(() {
-                                    quantity++;
-                                  });
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    PrimaryButton(
-                      label: 'Añadir al carrito',
-                      onPressed: () {
-                        cart.add(product, quantity: quantity);
-                        Navigator.of(context).pop();
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              '$quantity x ${product.name} agregado(s) al carrito',
-                            ),
-                          ),
-                        );
-                      },
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.of(modalContext).pop(),
                     ),
                   ],
                 ),
-              );
-            },
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child:
+                      product.imageUrl == null
+                          ? Container(
+                            height: 200,
+                            color: Colors.grey.shade100,
+                            child: const Center(
+                              child: Icon(
+                                Icons.inventory_2_outlined,
+                                size: 40,
+                                color: Colors.black26,
+                              ),
+                            ),
+                          )
+                          : Image.network(
+                            product.imageUrl!,
+                            height: 220,
+                            fit: BoxFit.cover,
+                            errorBuilder:
+                                (_, __, ___) => Container(
+                                  height: 200,
+                                  color: Colors.grey.shade100,
+                                  child: const Center(
+                                    child: Icon(
+                                      Icons.warning_amber_rounded,
+                                      size: 40,
+                                      color: Colors.black26,
+                                    ),
+                                  ),
+                                ),
+                          ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.add_shopping_cart),
+                  label: const Text('Añadir al carrito'),
+                  onPressed: () {
+                    cart.add(product);
+                    Navigator.of(modalContext).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('${product.name} añadido al carrito'),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         );
       },

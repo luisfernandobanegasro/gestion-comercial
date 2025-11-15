@@ -1,9 +1,7 @@
-// lib/widgets/product_card.dart
-
 import 'package:flutter/material.dart';
 import '../models/product.dart';
 
-class ProductCard extends StatelessWidget {
+class ProductCard extends StatefulWidget {
   final Product product;
   final VoidCallback onAddToCart;
   final VoidCallback? onOpenDetail;
@@ -16,13 +14,34 @@ class ProductCard extends StatelessWidget {
   });
 
   @override
+  State<ProductCard> createState() => _ProductCardState();
+}
+
+class _ProductCardState extends State<ProductCard> {
+  double _scale = 1.0;
+
+  void _handleAdd() {
+    // 1) Lógica de carrito
+    widget.onAddToCart();
+
+    // 2) Animación simple de escala
+    setState(() => _scale = 0.85);
+    Future.delayed(const Duration(milliseconds: 80), () {
+      if (!mounted) return;
+      setState(() => _scale = 1.0);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final hasDiscount = product.hasDiscount;
+    final hasDiscount = widget.product.hasDiscount;
+    final primary = Theme.of(context).colorScheme.primary;
 
     return GestureDetector(
-      onTap: onOpenDetail ?? onAddToCart,
+      onTap: widget.onOpenDetail ?? widget.onAddToCart,
       child: Card(
-        elevation: 1,
+        elevation: 2,
+        shadowColor: Colors.black.withOpacity(0.05),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -37,7 +56,7 @@ class ProductCard extends StatelessWidget {
                     ),
                     child: _buildImage(),
                   ),
-                  if (hasDiscount && product.activeOffer != null)
+                  if (hasDiscount && widget.product.activeOffer != null)
                     Positioned(
                       top: 8,
                       left: 8,
@@ -51,7 +70,7 @@ class ProductCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          '-${product.activeOffer!.discountPercent.toStringAsFixed(0)}%',
+                          '-${widget.product.activeOffer!.discountPercent.toStringAsFixed(0)}%',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 11,
@@ -70,7 +89,7 @@ class ProductCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    product.name,
+                    widget.product.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -80,10 +99,10 @@ class ProductCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
 
-                  // Precios: original tachado + final
+                  // Precios
                   if (hasDiscount) ...[
                     Text(
-                      'Bs. ${product.price.toStringAsFixed(2)}',
+                      'Bs. ${widget.product.price.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontSize: 12,
                         color: Colors.black45,
@@ -92,7 +111,7 @@ class ProductCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'Bs. ${product.displayPrice.toStringAsFixed(2)}',
+                      'Bs. ${widget.product.displayPrice.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 14,
@@ -101,7 +120,7 @@ class ProductCard extends StatelessWidget {
                     ),
                   ] else
                     Text(
-                      'Bs. ${product.displayPrice.toStringAsFixed(2)}',
+                      'Bs. ${widget.product.displayPrice.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 14,
@@ -110,33 +129,40 @@ class ProductCard extends StatelessWidget {
 
                   const SizedBox(height: 4),
                   Text(
-                    'Stock: ${product.stock}',
+                    'Stock: ${widget.product.stock}',
                     style: const TextStyle(fontSize: 11, color: Colors.black54),
                   ),
-                  if (product.brandName != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      product.brandName!,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.black38,
+                  if (widget.product.brandName != null &&
+                      widget.product.brandName!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        widget.product.brandName!,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.black38,
+                        ),
                       ),
                     ),
-                  ],
                   const SizedBox(height: 8),
                   Align(
                     alignment: Alignment.centerRight,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.blue.shade50,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: IconButton(
-                        icon: const Icon(Icons.add),
-                        onPressed: onAddToCart,
-                        constraints: const BoxConstraints(
-                          minWidth: 40,
-                          minHeight: 40,
+                    child: AnimatedScale(
+                      scale: _scale,
+                      duration: const Duration(milliseconds: 120),
+                      curve: Curves.easeOut,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: primary.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: IconButton(
+                          icon: Icon(Icons.add, color: primary),
+                          onPressed: _handleAdd,
+                          constraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 40,
+                          ),
                         ),
                       ),
                     ),
@@ -151,7 +177,7 @@ class ProductCard extends StatelessWidget {
   }
 
   Widget _buildImage() {
-    if (product.imageUrl == null || product.imageUrl!.isEmpty) {
+    if (widget.product.imageUrl == null || widget.product.imageUrl!.isEmpty) {
       return Container(
         color: Colors.grey.shade100,
         child: const Center(
@@ -165,7 +191,7 @@ class ProductCard extends StatelessWidget {
     }
 
     return Image.network(
-      product.imageUrl!,
+      widget.product.imageUrl!,
       fit: BoxFit.cover,
       errorBuilder: (_, __, ___) {
         return Container(

@@ -1,6 +1,7 @@
 // lib/screens/home/orders_screen.dart
 
 import 'package:flutter/material.dart';
+import 'package:mobile/widgets/empty_state.dart';
 import '../../models/sale.dart';
 import '../../services/sales_service.dart';
 import 'sale_detail_screen.dart';
@@ -29,6 +30,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
       _error = null;
     });
     try {
+      // CORRECCIÓN: Llamada a la nueva función del servicio
       final list = await salesService.fetchMySales();
       if (!mounted) return;
       setState(() {
@@ -68,22 +70,20 @@ class _OrdersScreenState extends State<OrdersScreen> {
     }
 
     if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline),
-            const SizedBox(height: 8),
-            Text(_error!),
-            TextButton(onPressed: _load, child: const Text('Reintentar')),
-          ],
-        ),
+      return EmptyState(
+        icon: Icons.error_outline,
+        title: 'Error al cargar las ventas',
+        message: _error!,
+        actionLabel: 'Reintentar',
+        onAction: _load,
       );
     }
 
     if (_sales.isEmpty) {
-      return const Center(
-        child: Text('Todavía no tienes compras registradas.'),
+      return const EmptyState(
+        icon: Icons.receipt_long_outlined,
+        title: 'Sin ventas',
+        message: 'Aún no tienes ventas registradas.',
       );
     }
 

@@ -1,15 +1,14 @@
 // lib/screens/home/sale_detail_screen.dart
 
 import 'package:flutter/material.dart';
+import 'package:mobile/widgets/empty_state.dart';
 import 'package:url_launcher/url_launcher.dart';
-
 import '../../models/sale.dart';
 import '../../services/sales_service.dart';
-import '../../config/api_config.dart'; // ApiConfig.api
+import '../../config/api_config.dart';
 
 class SaleDetailScreen extends StatefulWidget {
   final int saleId;
-
   const SaleDetailScreen({super.key, required this.saleId});
 
   @override
@@ -32,8 +31,8 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
       _loading = true;
       _error = null;
     });
-
     try {
+      // CORRECCIÓN: Llamada a la nueva función del servicio
       final sale = await salesService.fetchSaleDetail(widget.saleId);
       if (!mounted) return;
       setState(() {
@@ -54,50 +53,44 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   Future<void> _openPdf() async {
     if (_sale == null) return;
-
-    // Construye la URL del comprobante
     final url = '${ApiConfig.api}/ventas/ventas/${_sale!.id}/comprobante/';
-
     final uri = Uri.parse(url);
 
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-
-    if (!ok) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir el comprobante PDF')),
-      );
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se pudo abrir el comprobante PDF')),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: CircularProgressIndicator()),
+      );
     }
 
     if (_error != null || _sale == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Detalle de venta')),
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline),
-              const SizedBox(height: 8),
-              Text(_error ?? 'No se pudo cargar la venta'),
-              TextButton(onPressed: _load, child: const Text('Reintentar')),
-            ],
-          ),
+        appBar: AppBar(title: const Text('Detalle de Venta')),
+        body: EmptyState(
+          icon: Icons.error_outline,
+          title: 'Error al cargar la venta',
+          message: _error ?? 'No se pudo encontrar la venta especificada.',
+          actionLabel: 'Reintentar',
+          onAction: _load,
         ),
       );
     }
 
     final sale = _sale!;
-
     return Scaffold(
       appBar: AppBar(title: Text('Venta ${sale.folio}')),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
@@ -134,17 +127,38 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                     ),
                     const SizedBox(height: 8),
                     ...sale.items.map(
-                      (it) => Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(child: Text(it.productName)),
-                          Text('x${it.quantity}'),
-                          const SizedBox(width: 8),
-                          Text('Bs. ${it.subtotal.toStringAsFixed(2)}'),
-                        ],
+                      (it) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                it.productName,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text('x${it.quantity}'),
+                            SizedBox(
+                              width: 20,
+                              child: Text(
+                                'Bs.',
+                                textAlign: TextAlign.right,
+                                style: TextStyle(color: Colors.grey.shade600),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 70,
+                              child: Text(
+                                it.subtotal.toStringAsFixed(2),
+                                textAlign: TextAlign.right,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const Divider(height: 24),
                     Align(
                       alignment: Alignment.centerRight,
                       child: Text(

@@ -3,8 +3,11 @@
 
     <!-- 👇 PERMISOS: siempre van FUERA de <application> -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Si usas voz, puedes activar este también -->
-    <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
+
+    <!-- ===== INICIO DE LA CORRECCIÓN ===== -->
+    <!-- Se ha descomentado la línea para activar el permiso del micrófono -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- ===== FIN DE LA CORRECCIÓN ===== -->
 
     <application
         android:name="${applicationName}"

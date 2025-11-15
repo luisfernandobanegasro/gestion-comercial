@@ -200,12 +200,14 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
 MEDIA_ROOT = BASE_DIR / "media"
-MEDIA_URL = "/media/"
+# En local usará /media/, en producción usará el CloudFront que le pongas en .env
+MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
 
+# Dominio del backend SIN protocolo (solo host)
 BACKEND_DOMAIN = os.getenv(
     "BACKEND_DOMAIN",
     "smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com",
-)
+).strip()
 
 # ================================
 # CORS / CSRF
@@ -227,16 +229,24 @@ CORS_ALLOWED_ORIGINS = [] if CORS_ALLOW_ALL_ORIGINS else (
 )
 CORS_ALLOW_CREDENTIALS = True
 
-_csrf_from_cors = [
-    o if o.startswith("http") else f"http://{o}"
-    for o in (CORS_ALLOWED_ORIGINS or [])
-]
-_csrf_from_hosts = [
-    f"http://{h}" for h in _env_hosts if h and not h.startswith("http")
-]
-CSRF_TRUSTED_ORIGINS = list(
-    set(_csrf_from_cors + _csrf_from_hosts)
-)
+# Construimos CSRF_TRUSTED_ORIGINS pensando en http y https
+_csrf_from_cors = []
+for o in (CORS_ALLOWED_ORIGINS or []):
+    if o.startswith("http"):
+        _csrf_from_cors.append(o)
+    else:
+        _csrf_from_cors.extend([f"http://{o}", f"https://{o}"])
+
+_csrf_from_hosts = []
+for h in _env_hosts:
+    if not h:
+        continue
+    if h.startswith("http"):
+        _csrf_from_hosts.append(h)
+    else:
+        _csrf_from_hosts.extend([f"http://{h}", f"https://{h}"])
+
+CSRF_TRUSTED_ORIGINS = list(set(_csrf_from_cors + _csrf_from_hosts))
 
 # ================================
 # Email y Logging
