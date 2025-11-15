@@ -45,12 +45,13 @@ ALLOWED_HOSTS = list(
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
-# Forzar HTTPS en producción.
-SECURE_SSL_REDIRECT = not DEBUG
+# ⚠️ Mientras NO tengas HTTPS/443 configurado en EB,
+# NO forzar redirección a HTTPS (evita ERR_CONNECTION_TIMED_OUT)
+SECURE_SSL_REDIRECT = False
 
-# Cookies endurecidas en producción
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+# Cookies endurecidas SOLO cuando tengas HTTPS real
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 
@@ -250,7 +251,11 @@ _csrf_from_hosts = [
     f"https://{h}" for h in _env_hosts if h and not h.startswith("http")
 ]
 CSRF_TRUSTED_ORIGINS = list(
-    set(_csrf_from_cors + _csrf_from_hosts + ["https://*.elasticbeanstalk.com"])
+    set(
+        _csrf_from_cors
+        + _csrf_from_hosts
+        + ["https://smart-sales-365-env.eba-n3j3inxe.us-east-1.elasticbeanstalk.com"]
+    )
 )
 
 # ================================
