@@ -93,7 +93,7 @@ export default function Dashboard() {
         const res = await api.get('/reportes/dashboard/', { params })
         setData(res.data)
 
-        // inicializamos checklist del pie con todas las categorías que vengan
+        // checklist del pie con todas las categorías
         const cats = res.data?.ventas_por_categoria || []
         setVisibleCategories(cats.map(c => c.categoria))
       } catch (error) {
@@ -242,13 +242,24 @@ export default function Dashboard() {
         {/* Histórico + predicción */}
         <div className="card">
           <h3>Ventas históricas y predicciones</h3>
-          <div style={{ width: '100%', height: 280 }}>
+          <div style={{ width: '100%', height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={combinedChartData}
-                barCategoryGap={6}
-                barGap={1}
+                barCategoryGap={combinedChartData.length > 25 ? 8 : 20}
+                barGap={0}
               >
+                <defs>
+                  <linearGradient id="colorHist" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.95} />
+                    <stop offset="100%" stopColor="#0ea5e9" stopOpacity={0.7} />
+                  </linearGradient>
+                  <linearGradient id="colorPred" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#fb923c" stopOpacity={0.95} />
+                    <stop offset="100%" stopColor="#f97316" stopOpacity={0.7} />
+                  </linearGradient>
+                </defs>
+
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis
                   dataKey="fecha"
@@ -272,16 +283,20 @@ export default function Dashboard() {
                 <Bar
                   dataKey="historico"
                   name="Venta histórica"
-                  barSize={50}
-                  radius={[6, 6, 0, 0]}
-                  fill="#0ea5e9"
+                  barSize={combinedChartData.length > 25 ? 18 : 32}
+                  radius={[10, 10, 0, 0]}
+                  fill="url(#colorHist)"
+                  stroke="rgba(15,23,42,0.4)"
+                  strokeWidth={1}
                 />
                 <Bar
                   dataKey="prediccion"
                   name="Predicción"
-                  barSize={50}
-                  radius={[6, 6, 0, 0]}
-                  fill="#f97316"
+                  barSize={combinedChartData.length > 25 ? 18 : 32}
+                  radius={[10, 10, 0, 0]}
+                  fill="url(#colorPred)"
+                  stroke="rgba(15,23,42,0.4)"
+                  strokeWidth={1}
                 />
               </ComposedChart>
             </ResponsiveContainer>
