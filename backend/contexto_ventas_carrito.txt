@@ -1,0 +1,1151 @@
+================================================================================
+Archivo: ventas/models.py
+================================================================================
+
+from django.db import models
+from django.conf import settings
+from decimal import Decimal
+from django.utils.crypto import get_random_string
+from clientes.models import Cliente
+from catalogo.models import Producto, MovimientoInventario
+
+ESTADO_VENTA = (
+    ("pendiente", "Pendiente"),   # creada pero sin pago confirmado
+    ("pagada", "Pagada"),         # pago aprobado
+    ("anulada", "Anulada"),       # anulada antes/después de pago
+    ("reembolsada", "Reembolsada")# se devolvió el dinero (total)
+)
+
+def generar_folio():
+    # folio corto legible (no sensible)
+    return f"V-{get_random_string(10).upper()}"
+
+class Venta(models.Model):
+    
+    folio = models.CharField(
+    max_length=20,
+    unique=True,
+    null=False,         # definitivo
+    blank=False,        # definitivo
+    default=generar_folio,  # definitivo (callable)
+    db_index=True,
+    )
+
+    cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name="ventas")
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="ventas_creadas")
+    estado = models.CharField(max_length=12, choices=ESTADO_VENTA, default="pendiente", db_index=True)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    descuento = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    impuestos = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    observaciones = models.CharField(max_length=250, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-creado_en"]
+
+    def __str__(self):
+        return f"{self.folio} - {self.cliente.nombre} - {self.estado}"
+
+    def recalc_totales(self):
+        sub = sum((i.subtotal for i in self.items.all()), start=Decimal("0.00"))
+        self.subtotal = sub
+        # Política simple: total = subtotal - descuento + impuestos
+        self.total = (self.subtotal - self.descuento + self.impuestos).quantize(Decimal("0.01"))
+        self.save(update_fields=["subtotal", "total", "actualizado_en"])
+
+    @property
+    def puede_anular(self):
+        return self.estado in ("pendiente", "pagada")
+
+    @property
+    def puede_confirmar_pago(self):
+        return self.estado == "pendiente"
+
+class ItemVenta(models.Model):
+    venta = models.ForeignKey(Venta, on_delete=models.CASCADE, related_name="items")
+    producto = models.ForeignKey(Producto, on_delete=models.PROTECT, related_name="items_vendidos")
+    cantidad = models.PositiveIntegerField()
+    precio_unit = models.DecimalField(max_digits=12, decimal_places=2)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.venta.folio} - {self.producto.nombre} x{self.cantidad}"
+
+    def save(self, *args, **kwargs):
+        """Calcula el subtotal antes de guardar."""
+        if self.cantidad and self.precio_unit:
+            self.subtotal = self.cantidad * self.precio_unit
+        super().save(*args, **kwargs)
+
+
+================================================================================
+Archivo: ventas/serializers.py
+================================================================================
+
+from rest_framework import serializers
+from .models import Venta, ItemVenta
+from clientes.models import Cliente
+
+
+# Serializer simple para anidar la información del cliente en la venta.
+# Esto resuelve el problema del "N/A" en el detalle de la venta.
+class _ClienteSimpleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Cliente
+        fields = ["id", "nombre", "documento", "email"]
+
+
+class ItemVentaSerializer(serializers.ModelSerializer):
+    # Añadimos el nombre del producto para que sea fácil de mostrar en el frontend.
+    producto_nombre = serializers.CharField(
+        source="producto.nombre",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ItemVenta
+        fields = ["id", "producto", "producto_nombre",
+                  "cantidad", "precio_unit", "subtotal"]
+
+
+class VentaSerializer(serializers.ModelSerializer):
+    # Para lectura, incluimos el objeto completo del cliente y la lista de items.
+    cliente_obj = _ClienteSimpleSerializer(source="cliente", read_only=True)
+    items = ItemVentaSerializer(many=True, read_only=True)
+
+    # cliente_nombre es útil para la vista de lista, donde no necesitamos el objeto completo.
+    cliente_nombre = serializers.CharField(
+        source="cliente.nombre",
+        read_only=True,
+    )
+
+    class Meta:
+        model = Venta
+        fields = [
+            "id", "folio", "cliente", "cliente_obj", "cliente_nombre", "usuario",
+            "estado", "subtotal", "descuento", "impuestos", "total",
+            "observaciones", "creado_en", "actualizado_en", "items",
+        ]
+        # Web: puede enviar cliente.
+        # App móvil (rol Cliente): puede omitir cliente y se auto-asigna.
+        extra_kwargs = {
+            "cliente": {"write_only": True, "required": False},
+        }
+
+    # ------------------ helpers internos ------------------
+
+    def _resolver_cliente(self, validated_data):
+        """
+        - Si 'cliente' viene en validated_data → lo usa (caso web).
+        - Si NO viene:
+            * Si el usuario tiene rol Cliente → busca Cliente vinculado a ese usuario.
+            * Si NO tiene rol Cliente → error.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        cliente = validated_data.get("cliente")
+        if cliente:
+            return cliente
+
+        # No se mandó cliente explícito
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError(
+                {"cliente": "Este campo es requerido."}
+            )
+
+        # Sólo autocompletamos para usuarios con rol 'Cliente'
+        try:
+            tiene_rol_cliente = user.roles.filter(
+                nombre__iexact="Cliente"
+            ).exists()
+        except Exception:
+            tiene_rol_cliente = False
+
+        if not tiene_rol_cliente:
+            # Admin / Empleado deben enviar cliente desde el frontend (web)
+            raise serializers.ValidationError(
+                {"cliente": "Este campo es requerido para usuarios que no son Cliente."}
+            )
+
+        cli = Cliente.objects.filter(usuario=user).first()
+        if not cli:
+            raise serializers.ValidationError(
+                {
+                    "cliente": (
+                        "No hay un Cliente vinculado a este usuario. "
+                        "Vincula el usuario a un Cliente en el panel de administración."
+                    )
+                }
+            )
+
+        validated_data["cliente"] = cli
+        return cli
+
+    # ------------------ CREATE ------------------
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+
+        # 1) Resolver cliente según reglas web / móvil
+        self._resolver_cliente(validated_data)
+
+        # 2) El frontend envía los items en el cuerpo de la petición
+        items_data = []
+        if request is not None:
+            items_data = request.data.get("items", [])
+
+        if not items_data:
+            raise serializers.ValidationError(
+                {"items": "La venta debe tener al menos un producto."}
+            )
+
+        # 3) Crear venta
+        venta = Venta.objects.create(**validated_data)
+
+        # 4) Crear items
+        for item_data in items_data:
+            ItemVenta.objects.create(
+                venta=venta,
+                producto_id=item_data["producto"],
+                cantidad=item_data["cantidad"],
+                precio_unit=item_data["precio_unit"],
+                # El subtotal se calcula en el save del ItemVenta o en recalc_totales
+            )
+
+        # 5) Recalcular totales
+        venta.recalc_totales()
+        return venta
+
+    # ------------------ UPDATE ------------------
+
+    def update(self, instance, validated_data):
+        # El método update solo se permitirá para ventas pendientes.
+        if instance.estado != "pendiente":
+            raise serializers.ValidationError(
+                "Solo se pueden editar ventas en estado 'pendiente'."
+            )
+
+        request = self.context.get("request")
+        items_data = (
+            request.data.get("items") if request is not None else None
+        )
+
+        # Si se envían items, se reemplazan los existentes.
+        if items_data is not None:
+            if not items_data:
+                raise serializers.ValidationError(
+                    {"items": "La venta no puede quedar sin productos."}
+                )
+
+            # Eliminar items antiguos y crear los nuevos
+            instance.items.all().delete()
+            for item_data in items_data:
+                producto_id = item_data.pop("producto")
+                ItemVenta.objects.create(
+                    venta=instance,
+                    producto_id=producto_id,
+                    **item_data,
+                )
+
+        # Recalcular totales y guardar la venta
+        instance.recalc_totales()
+        return super().update(instance, validated_data)
+
+
+================================================================================
+Archivo: ventas/views.py
+================================================================================
+
+# ventas/views.py
+from rest_framework import viewsets, permissions, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.http import HttpResponse
+from django.db import transaction
+
+from .models import Venta, ItemVenta
+from .serializers import VentaSerializer
+from cuentas.permissions import RequierePermisos
+from clientes.models import Cliente
+from catalogo.models import Producto
+from .services import marcar_pagada, anular_venta
+from .pdf import generar_comprobante_pdf
+
+
+class VentaViewSet(viewsets.ModelViewSet):
+    """
+    /api/ventas/ con JWT
+    - Cliente: solo ve sus ventas (si tiene Cliente.usuario vinculado)
+    - Empleado/Administrador: ven todo
+    """
+    queryset = Venta.objects.all().select_related("cliente", "usuario")
+    serializer_class = VentaSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    # required_perms se define por acción para mayor granularidad
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        u = self.request.user
+        if u.roles.filter(nombre__iexact="Cliente").exists():
+            cli = Cliente.objects.filter(usuario=u).first()
+            if not cli:
+                return qs.none()
+            qs = qs.filter(cliente=cli)
+        return qs
+
+    def get_permissions(self):
+        """Asigna permisos específicos para cada acción."""
+        if self.action in ['list', 'retrieve']:
+            self.required_perms = ["ventas.ver"]
+        elif self.action in ['create', 'crear_desde_carrito']:
+            self.required_perms = ["ventas.crear"]
+        elif self.action in ['update', 'partial_update']:
+            self.required_perms = ["ventas.editar"]
+        elif self.action == 'anular':
+            self.required_perms = ["ventas.anular"]
+        elif self.action in ['confirmar_pago', 'comprobante']:
+            # Reutilizamos el permiso de crear pagos
+            self.required_perms = ["pagos.crear"]
+        else:
+            # Default seguro para cualquier otra acción futura
+            self.required_perms = ["admin.is_staff"]
+        return super().get_permissions()
+
+    def perform_create(self, serializer):
+        serializer.save(usuario=self.request.user)
+
+    @action(detail=False, methods=["post"], url_path="desde-carrito")
+    def crear_desde_carrito(self, request):
+        """
+        Crea una venta a partir de un carrito enviado por el cliente móvil.
+
+        Espera body JSON:
+        {
+          "cliente": 1,              # opcional si el usuario ya está vinculado a un Cliente
+          "items": [
+            { "producto": 5, "cantidad": 2 },
+            { "producto": 7, "cantidad": 1 }
+          ]
+        }
+
+        Respuesta: VentaSerializer + estado ya 'pagada'.
+        """
+        u = request.user
+
+        # 1) Resolver cliente
+        cliente_id = request.data.get("cliente")
+        if cliente_id:
+            cliente = Cliente.objects.filter(pk=cliente_id).first()
+            if not cliente:
+                return Response(
+                    {"detail": "Cliente no encontrado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            # Buscar cliente vinculado al usuario (rol Cliente)
+            cliente = Cliente.objects.filter(usuario=u).first()
+            if not cliente:
+                return Response(
+                    {
+                        "detail": "No se pudo determinar el cliente. "
+                                  "Envíe el ID de cliente o vincule el usuario a un cliente."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        items_data = request.data.get("items", [])
+        if not items_data:
+            return Response(
+                {"detail": "El carrito está vacío."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # 2) Crear venta en estado 'pendiente'
+            venta = Venta.objects.create(
+                cliente=cliente,
+                usuario=u,
+                estado="pendiente",
+            )
+
+            # 3) Crear items con el precio actual del producto (precio_final si hay oferta)
+            for raw_item in items_data:
+                prod_id = raw_item.get("producto")
+                cantidad = int(raw_item.get("cantidad") or 0)
+
+                if not prod_id or cantidad <= 0:
+                    continue
+
+                producto = Producto.objects.filter(pk=prod_id, activo=True).first()
+                if not producto:
+                    continue
+
+                precio_unit = producto.precio_final  # usa descuento si lo hay
+                ItemVenta.objects.create(
+                    venta=venta,
+                    producto=producto,
+                    cantidad=cantidad,
+                    precio_unit=precio_unit,
+                    subtotal=precio_unit * cantidad,
+                )
+
+            # Validar que haya items
+            if not venta.items.exists():
+                raise ValueError("La venta no tiene ítems válidos.")
+
+            # 4) Recalcular totales y marcar pagada (descuento de stock)
+            venta.recalc_totales()
+            marcar_pagada(venta, usuario=u)
+
+        serializer = VentaSerializer(venta, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["post"],
+    )
+    def confirmar_pago(self, request, pk=None):
+        """
+        Marca la venta como pagada y descuenta stock.
+        (Si ya está pagada, es idempotente.)
+        """
+        venta = self.get_object()
+        try:
+            with transaction.atomic():
+                marcar_pagada(venta, usuario=request.user)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response({"detail": "Pago confirmado", "estado": venta.estado})
+
+    @action(
+        detail=True,
+        methods=["post"],
+    )
+    def anular(self, request, pk=None):
+        """
+        Anula la venta. Si estaba pagada, reingresa stock.
+        Si estaba pendiente, no toca stock.
+        """
+        venta = self.get_object()
+        try:
+            with transaction.atomic():
+                anular_venta(venta, usuario=request.user)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response({"detail": "Venta anulada", "estado": venta.estado})
+
+    @action(detail=True, methods=["get"], url_path="comprobante")
+    def comprobante(self, request, pk=None):
+        """Genera y devuelve el comprobante de la venta en formato PDF."""
+        venta = self.get_object()
+        if venta.estado != 'pagada':
+            return Response(
+                {"detail": "Solo se puede generar comprobante de ventas pagadas."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        buffer = generar_comprobante_pdf(venta)
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'inline; filename="comprobante_{venta.folio}.pdf"'
+        )
+        return response
+
+
+================================================================================
+Archivo: ventas/urls.py
+================================================================================
+
+# ventas/urls.py
+from rest_framework.routers import DefaultRouter
+from .views import VentaViewSet
+
+router = DefaultRouter()
+router.register("ventas", VentaViewSet, basename="ventas")
+
+urlpatterns = router.urls
+
+
+================================================================================
+Archivo: core/urls.py
+================================================================================
+
+from django.contrib import admin
+from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from django.conf import settings
+from django.conf.urls.static import static
+from django.http import JsonResponse
+from .health import health_check
+from urllib.parse import urlparse
+
+def root_health(_):
+    return JsonResponse({"service": "smart-sales-365-api", "status": "ok"})
+
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    path("", root_health),
+
+    # OpenAPI
+    path("api/esquema/", SpectacularAPIView.as_view(), name="esquema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="esquema"), name="docs"),
+
+    # Rutas de apps
+    path("api/cuentas/", include("cuentas.urls")),
+    path("api/catalogo/", include("catalogo.urls")),
+    path("api/clientes/", include("clientes.urls")),
+    path("api/ventas/", include("ventas.urls")),
+    path("api/pagos/", include("pagos.urls")),
+    path("api/reportes/", include("reportes.urls")),
+    path("api/configuracion/", include("configuracion.urls")),
+    path("api/analitica/", include("analitica.urls")),
+    path("api/auditoria/", include("auditoria.urls")),
+    # psath("api/ia/", include("ia.urls")),
+
+    path("health/", health_check, name="health_check"),
+]
+
+# ⭐ SERVIR MEDIA TANTO EN DEBUG COMO EN PRODUCCIÓN ⭐
+media_prefix = settings.MEDIA_URL
+if media_prefix.startswith("http"):
+    media_prefix = urlparse(media_prefix).path or "/media/"
+
+urlpatterns += static(media_prefix, document_root=settings.MEDIA_ROOT)
+
+================================================================================
+Archivo: catalogo/models.py
+================================================================================
+
+from django.db import models
+from django.conf import settings
+from django.utils import timezone
+from django.utils.text import slugify
+
+
+# ==========================
+# Helpers para código único
+# ==========================
+def _prefijo_categoria(nombre_categoria: str | None) -> str:
+    """
+    Genera un prefijo de 3 letras en MAYÚSCULAS a partir del nombre de la categoría.
+    Si no hay nombre, usa 'GEN'.
+    """
+    base = slugify(nombre_categoria or "GEN").replace("-", "")
+    base = (base[:3] or "gen").upper()
+    return base
+
+
+def _siguiente_codigo_unico(prefijo: str) -> str:
+    """
+    Devuelve un código único con el formato PREFIJO-###.
+    Busca el siguiente correlativo disponible, evitando colisiones.
+    """
+    from catalogo.models import Producto  # import local para evitar ciclos
+    sec = Producto.objects.filter(codigo__startswith=f"{prefijo}-").count() + 1
+    # En caso de huecos por eliminaciones, garantizamos unicidad con un loop
+    while True:
+        codigo = f"{prefijo}-{sec:03d}"
+        if not Producto.objects.filter(codigo=codigo).exists():
+            return codigo
+        sec += 1
+
+
+# ==========================
+# Modelos
+# ==========================
+class Categoria(models.Model):
+    nombre = models.CharField(max_length=80, unique=True)
+    descripcion = models.CharField(max_length=200, blank=True)
+    activa = models.BooleanField(default=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nombre"]
+
+    def __str__(self) -> str:
+        return self.nombre
+
+class Marca(models.Model):
+    nombre = models.CharField(max_length=80, unique=True)
+    activa = models.BooleanField(default=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nombre"]
+
+    def __str__(self) -> str:
+        return self.nombre
+
+
+class OfertaManager(models.Manager):
+    def activas(self):
+        """Devuelve solo las ofertas que están actualmente vigentes."""
+        now = timezone.now()
+        return self.get_queryset().filter(
+            activa=True,
+            fecha_inicio__lte=now,
+            fecha_fin__gte=now
+        )
+
+class Oferta(models.Model):
+    """Modelo para gestionar descuentos y promociones."""
+    nombre = models.CharField(max_length=150)
+    porcentaje_descuento = models.DecimalField(max_digits=5, decimal_places=2, help_text="Ej: 20.00 para un 20% de descuento")
+    fecha_inicio = models.DateTimeField()
+    fecha_fin = models.DateTimeField()
+    activa = models.BooleanField(default=True)
+
+    # Campos para aplicar la oferta de forma flexible
+    marcas = models.ManyToManyField('catalogo.Marca', blank=True, related_name='ofertas')
+    categorias = models.ManyToManyField('catalogo.Categoria', blank=True, related_name='ofertas')
+    productos_especificos = models.ManyToManyField('catalogo.Producto', blank=True, related_name='ofertas_especificas')
+
+    objects = OfertaManager()
+
+    class Meta:
+        ordering = ["-fecha_inicio"]
+
+    def __str__(self):
+        return f"{self.nombre} ({self.porcentaje_descuento}%)"
+
+
+class Producto(models.Model):
+    """
+    - 'codigo' puede dejarse vacío al crear: se autogenera como PREF-###.
+    - Si se proporciona un 'codigo' manual, se respeta (debe ser único).
+    - En ediciones posteriores NO se regenera automáticamente; puedes editarlo.
+    """
+    codigo = models.CharField(
+        max_length=50,
+        unique=True,
+        null=True,    # permite múltiples NULL en Postgres sin romper unique
+        blank=True,
+        default=None, # evita default ""
+        help_text="Código interno del producto (único). Si lo dejas vacío al crear, se autogenera."
+    )
+    nombre = models.CharField(max_length=120)
+    modelo = models.CharField(max_length=100, blank=True, help_text="Ej: G502 Hero, Viper Mini, etc.")
+    caracteristicas = models.TextField(blank=True, help_text="Características adicionales del producto, una por línea.")
+    marca = models.ForeignKey(
+        Marca,
+        on_delete=models.PROTECT,
+        related_name="productos",
+        null=True,
+        blank=True
+    )
+    categoria = models.ForeignKey(
+        Categoria,
+        on_delete=models.PROTECT,
+        related_name="productos"
+    )
+    precio = models.DecimalField(max_digits=12, decimal_places=2)
+    stock = models.IntegerField(default=0)
+    activo = models.BooleanField(default=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+    imagen = models.ImageField(upload_to='productos/', null=True, blank=True)
+    
+    class Meta:
+        ordering = ["nombre"]
+        indexes = [
+            models.Index(fields=["codigo"]),
+            models.Index(fields=["nombre"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.codigo or 'SIN-CODIGO'} - {self.nombre}"
+
+    @property
+    def oferta_activa(self):
+        """
+        Busca la mejor oferta activa para este producto.
+        La prioridad es: oferta específica > oferta de marca > oferta de categoría.
+        Devuelve el objeto Oferta o None.
+        """
+        from django.db.models import Q
+
+        # Construir el filtro para buscar ofertas aplicables a este producto
+        filtro_aplicable = Q(productos_especificos=self)
+        if self.marca_id:
+            filtro_aplicable |= Q(marcas=self.marca)
+        if self.categoria_id:
+            filtro_aplicable |= Q(categorias=self.categoria)
+
+        # Buscar la mejor oferta (mayor descuento) que aplique
+        mejor_oferta = Oferta.objects.activas().filter(filtro_aplicable).order_by('-porcentaje_descuento').first()
+        return mejor_oferta
+
+    @property
+    def precio_final(self):
+        """Calcula el precio final aplicando el mejor descuento activo."""
+        oferta = self.oferta_activa
+        if not oferta:
+            return self.precio
+        
+        descuento = self.precio * (oferta.porcentaje_descuento / 100)
+        return self.precio - descuento
+
+    def save(self, *args, **kwargs):
+        """
+        Autogenera 'codigo' SOLO al CREAR y cuando viene vacío/None.
+        Si ya existe (update) o se proporciona manualmente, se respeta.
+        """
+        creating = self._state.adding
+        super().save(*args, **kwargs)  # guardamos primero para tener PK
+
+        if creating and not self.codigo:
+            pref = _prefijo_categoria(getattr(self.categoria, "nombre", None))
+            self.codigo = _siguiente_codigo_unico(pref)
+            super().save(update_fields=["codigo"])  # segunda pasada: solo 'codigo'
+
+
+TIPO_MOV = (("IN", "Entrada"), ("OUT", "Salida"))
+
+
+class MovimientoInventario(models.Model):
+    producto = models.ForeignKey(
+        Producto,
+        on_delete=models.PROTECT,
+        related_name="movimientos"
+    )
+    tipo = models.CharField(max_length=3, choices=TIPO_MOV)
+    cantidad = models.IntegerField()
+    motivo = models.CharField(max_length=120, blank=True)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-creado_en"]
+
+    def __str__(self) -> str:
+        return f"{self.creado_en:%Y-%m-%d %H:%M} {self.tipo} {self.cantidad} {self.producto_id}"
+
+
+================================================================================
+Archivo: catalogo/serializers.py
+================================================================================
+
+# catalogo/serializers.py
+from rest_framework import serializers
+
+from .models import (
+    Categoria,
+    Marca,
+    Producto,
+    MovimientoInventario,
+    Oferta,
+)
+
+
+class CategoriaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Categoria
+        fields = [
+            "id",
+            "nombre",
+            "descripcion",
+            "activa",
+            "creado_en",
+            "actualizado_en",
+        ]
+
+
+class MarcaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Marca
+        fields = [
+            "id",
+            "nombre",
+            "activa",
+            "creado_en",
+            "actualizado_en",
+        ]
+
+
+class OfertaSerializer(serializers.ModelSerializer):
+    # Relacionamos por ID
+    categorias = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Categoria.objects.all(),
+        required=False,
+    )
+    marcas = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Marca.objects.all(),
+        required=False,
+    )
+    productos_especificos = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Producto.objects.all(),
+        required=False,
+    )
+
+    # Versiones “solo nombre” para mostrar en la tabla
+    categorias_nombres = serializers.SlugRelatedField(
+        many=True,
+        read_only=True,
+        slug_field="nombre",
+        source="categorias",
+    )
+    marcas_nombres = serializers.SlugRelatedField(
+        many=True,
+        read_only=True,
+        slug_field="nombre",
+        source="marcas",
+    )
+    productos_nombres = serializers.SlugRelatedField(
+        many=True,
+        read_only=True,
+        slug_field="nombre",
+        source="productos_especificos",
+    )
+
+    class Meta:
+        model = Oferta
+        fields = [
+            "id",
+            "nombre",
+            "porcentaje_descuento",
+            "fecha_inicio",
+            "fecha_fin",
+            "activa",
+            "categorias",
+            "marcas",
+            "productos_especificos",
+            "categorias_nombres",
+            "marcas_nombres",
+            "productos_nombres",
+        ]
+
+
+class ProductoSerializer(serializers.ModelSerializer):
+    categoria_nombre = serializers.CharField(
+        source="categoria.nombre", read_only=True
+    )
+    marca_nombre = serializers.CharField(
+        source="marca.nombre", read_only=True
+    )
+
+    # Objeto de la mejor oferta activa (propiedad @property oferta_activa)
+    oferta_activa = OfertaSerializer(read_only=True)
+
+    precio_final = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    imagen_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Producto
+        fields = [
+            "id",
+            "codigo",
+            "nombre",
+            "modelo",
+            "caracteristicas",
+            "marca",
+            "marca_nombre",
+            "categoria",
+            "categoria_nombre",
+            "precio",
+            "precio_final",
+            "oferta_activa",
+            "stock",
+            "activo",
+            "creado_en",
+            "actualizado_en",
+            "imagen",
+            "imagen_url",
+        ]
+        extra_kwargs = {
+            "imagen": {"write_only": True, "required": False},
+        }
+
+    def get_imagen_url(self, obj):
+        request = self.context.get("request")
+        if obj.imagen and request is not None:
+            return request.build_absolute_uri(obj.imagen.url)
+        return None
+
+
+class MovimientoInventarioSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.CharField(
+        source="producto.nombre", read_only=True
+    )
+    usuario_username = serializers.CharField(
+        source="usuario.username", read_only=True
+    )
+
+    class Meta:
+        model = MovimientoInventario
+        fields = [
+            "id",
+            "producto",
+            "producto_nombre",
+            "tipo",
+            "cantidad",
+            "motivo",
+            "usuario",
+            "usuario_username",
+            "creado_en",
+        ]
+        read_only_fields = [
+            "usuario",
+            "creado_en",
+            "usuario_username",
+            "producto_nombre",
+        ]
+
+
+================================================================================
+Archivo: catalogo/views.py
+================================================================================
+
+# catalogo/views.py
+from django.db import transaction
+
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import viewsets, permissions
+from rest_framework.filters import OrderingFilter, SearchFilter
+
+from cuentas.permissions import RequierePermisos
+from .filters import ProductoFilter, OfertaFilter
+from .models import Categoria, Marca, Producto, MovimientoInventario, Oferta
+from .serializers import (
+    CategoriaSerializer,
+    MarcaSerializer,
+    ProductoSerializer,
+    MovimientoInventarioSerializer,
+    OfertaSerializer,
+)
+
+
+class CategoriaViewSet(viewsets.ModelViewSet):
+    queryset = Categoria.objects.all().order_by("nombre")
+    serializer_class = CategoriaSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+
+    def get_permissions(self):
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["catalogo.ver"]
+        elif self.action == "create":
+            self.required_perms = ["catalogo.crear"]
+        elif self.action in ["update", "partial_update"]:
+            self.required_perms = ["catalogo.editar"]
+        elif self.action == "destroy":
+            self.required_perms = ["catalogo.eliminar"]
+        return [p() for p in self.permission_classes]
+
+
+class MarcaViewSet(viewsets.ModelViewSet):
+    queryset = Marca.objects.all().order_by("nombre")
+    serializer_class = MarcaSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    filter_backends = [OrderingFilter, SearchFilter]
+    ordering_fields = ["nombre"]
+    search_fields = ["nombre"]
+
+    def get_permissions(self):
+        # Usamos los mismos permisos que para categorías
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["catalogo.ver"]
+        else:
+            # Un solo permiso para crear/editar/eliminar
+            self.required_perms = ["catalogo.editar"]
+        return [p() for p in self.permission_classes]
+
+
+class OfertaViewSet(viewsets.ModelViewSet):
+    queryset = Oferta.objects.all().order_by("-fecha_inicio")
+    serializer_class = OfertaSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = OfertaFilter
+    ordering_fields = ["fecha_inicio", "fecha_fin", "porcentaje_descuento"]
+    search_fields = ["nombre"]
+
+    def get_permissions(self):
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["catalogo.ver"]
+        else:
+            self.required_perms = ["catalogo.editar"]
+        return [p() for p in self.permission_classes]
+
+
+class ProductoViewSet(viewsets.ModelViewSet):
+    queryset = (
+        Producto.objects
+        # si quieres que el móvil solo vea productos activos, descomenta la siguiente línea:
+        # .filter(activo=True)
+        .select_related("categoria", "marca")
+        .prefetch_related("ofertas_especificas")
+        .order_by("nombre")
+    )
+    serializer_class = ProductoSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = ProductoFilter
+    ordering_fields = ["precio", "nombre", "stock", "creado_en"]
+    search_fields = ["nombre", "codigo", "modelo", "marca__nombre", "categoria__nombre"]
+
+    def get_permissions(self):
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["catalogo.ver"]
+        elif self.action == "create":
+            self.required_perms = ["catalogo.crear"]
+        elif self.action in ["update", "partial_update"]:
+            self.required_perms = ["catalogo.editar"]
+        elif self.action == "destroy":
+            self.required_perms = ["catalogo.eliminar"]
+        return [p() for p in self.permission_classes]
+
+
+class MovimientoInventarioViewSet(viewsets.ModelViewSet):
+    queryset = MovimientoInventario.objects.select_related("producto", "usuario").all()
+    serializer_class = MovimientoInventarioSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    ordering_fields = ["creado_en", "cantidad"]
+
+    def get_permissions(self):
+        # Podrías tener permisos específicos de inventario, por ahora usamos catalogo.editar
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["catalogo.ver"]
+        else:
+            self.required_perms = ["catalogo.editar"]
+        return [p() for p in self.permission_classes]
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        mov = serializer.save(usuario=self.request.user)
+        p = mov.producto
+
+        if mov.tipo == "IN":
+            p.stock = p.stock + mov.cantidad
+        else:  # "OUT"
+            if mov.cantidad > p.stock:
+                # rollback implícito por atomic
+                from rest_framework.exceptions import ValidationError
+
+                raise ValidationError({"cantidad": "No hay stock suficiente para salida."})
+            p.stock = p.stock - mov.cantidad
+
+        p.save(update_fields=["stock"])
+
+
+================================================================================
+Archivo: clientes/models.py
+================================================================================
+
+from django.db import models
+from django.conf import settings
+
+class Cliente(models.Model):
+    usuario = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE, # Si se borra el usuario, se borra su perfil de cliente.
+        related_name="perfil_cliente"
+    )
+    # Estos campos son para facturación y pueden ser distintos a los de la cuenta de usuario.
+    nombre = models.CharField(max_length=120, help_text="Nombre completo o Razón Social para facturación")
+    email = models.EmailField(blank=True, help_text="Email para facturación (si es distinto al de la cuenta)")
+    telefono = models.CharField(max_length=30, blank=True)
+    direccion = models.CharField(max_length=200, blank=True)
+    documento = models.CharField(max_length=20, blank=True, help_text="CI o NIT para facturas")
+    activo = models.BooleanField(default=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["nombre"]
+        indexes = [
+            models.Index(fields=["nombre"]),
+        ]
+
+    def __str__(self):
+        return self.nombre or self.usuario.username
+
+================================================================================
+Archivo: clientes/serializers.py
+================================================================================
+
+from rest_framework import serializers
+from .models import Cliente
+from cuentas.models import Usuario
+
+class _UsuarioClienteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Usuario
+        fields = ["id", "username", "email"]
+
+class ClienteSerializer(serializers.ModelSerializer):
+    usuario_obj = _UsuarioClienteSerializer(source="usuario", read_only=True)
+
+    class Meta:
+        model = Cliente
+        fields = [
+            "id",
+            "nombre",
+            "email",
+            "telefono",
+            "documento",      # <-- AGREGADO (CI/NIT)
+            # "direccion",     # <-- omitido a propósito del payload
+            "activo",
+            "creado_en",
+            "actualizado_en",
+            "usuario",        # write_only
+            "usuario_obj",    # read_only
+        ]
+        extra_kwargs = {
+            "usuario": {"write_only": True, "required": False, "allow_null": True},
+            # los demás campos quedan opcionales según tu modelo (email/telefono/documento tienen blank=True)
+        }
+
+
+================================================================================
+Archivo: clientes/views.py
+================================================================================
+
+from rest_framework import viewsets, permissions
+from rest_framework.filters import OrderingFilter, SearchFilter
+from django_filters.rest_framework import DjangoFilterBackend
+from .models import Cliente
+from .serializers import ClienteSerializer
+from .filters import ClienteFilter
+from cuentas.permissions import RequierePermisos
+
+class ClienteViewSet(viewsets.ModelViewSet):
+    queryset = Cliente.objects.select_related("usuario").all().order_by("nombre")
+    serializer_class = ClienteSerializer
+    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_class = ClienteFilter
+    ordering_fields = ["nombre", "creado_en"]
+    search_fields = ["nombre","email","telefono","documento"]
+
+    def get_permissions(self):
+        if self.action in ["list", "retrieve"]:
+            self.required_perms = ["clientes.ver"]
+        elif self.action == "create":
+            self.required_perms = ["clientes.crear"]
+        elif self.action in ["update", "partial_update"]:
+            self.required_perms = ["clientes.editar"]
+        elif self.action == "destroy":
+            self.required_perms = ["clientes.eliminar"]
+        return [p() for p in self.permission_classes]
+
+

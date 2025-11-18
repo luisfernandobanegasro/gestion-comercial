@@ -15,7 +15,7 @@ from ventas.models import Venta
 
 def get_sales_data():
     """
-    Obtiene los datos de ventas diarias de la base deatos y los prepara para el modelo.
+    Obtiene los datos de ventas diarias de la base de datos y los prepara para el modelo.
     """
     # Obtenemos ventas pagadas, agrupadas por día
     sales = (
@@ -34,7 +34,7 @@ def get_sales_data():
     df = df.set_index("fecha")
 
     # Asegurarnos de que tenemos un rango de fechas continuo, rellenando días sin ventas con 0
-    df = df.asfreq('D', fill_value=0)
+    df = df.asfreq("D", fill_value=0)
     return df
 
 
@@ -42,11 +42,11 @@ def create_features(df):
     """
     Crea características (features) a partir de la fecha para el modelo.
     """
-    df['dia_semana'] = df.index.dayofweek  # Lunes=0, Domingo=6
-    df['dia_mes'] = df.index.day
-    df['mes'] = df.index.month
-    df['anio'] = df.index.year
-    df['semana_anio'] = df.index.isocalendar().week.astype(int)
+    df["dia_semana"] = df.index.dayofweek  # Lunes=0, Domingo=6
+    df["dia_mes"] = df.index.day
+    df["mes"] = df.index.month
+    df["anio"] = df.index.year
+    df["semana_anio"] = df.index.isocalendar().week.astype(int)
     return df
 
 
@@ -64,14 +64,16 @@ def train_model():
 
     df = create_features(df)
 
-    FEATURES = ['dia_semana', 'dia_mes', 'mes', 'anio', 'semana_anio']
-    TARGET = 'ventas'
+    FEATURES = ["dia_semana", "dia_mes", "mes", "anio", "semana_anio"]
+    TARGET = "ventas"
 
     X = df[FEATURES]
     y = df[TARGET]
 
     # Dividimos los datos para una validación simple
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=False)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, shuffle=False
+    )
 
     # Modelo: RandomForestRegressor
     model = RandomForestRegressor(n_estimators=100, random_state=42, min_samples_leaf=2)
@@ -103,6 +105,11 @@ def generate_predictions(days_to_predict=30):
     future_df = pd.DataFrame(index=future_dates)
     future_df = create_features(future_df)
 
-    predictions = model.predict(future_df[['dia_semana', 'dia_mes', 'mes', 'anio', 'semana_anio']])
-    
-    return [{"fecha": date.strftime('%Y-%m-%d'), "prediccion": float(pred)} for date, pred in zip(future_dates, predictions)]
+    predictions = model.predict(
+        future_df[["dia_semana", "dia_mes", "mes", "anio", "semana_anio"]]
+    )
+
+    return [
+        {"fecha": date.strftime("%Y-%m-%d"), "prediccion": float(pred)}
+        for date, pred in zip(future_dates, predictions)
+    ]

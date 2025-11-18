@@ -1,157 +1,217 @@
 ================================================================================
-Archivo: reportes/views.py
+Archivo: reportes/models.py
 ================================================================================
 
-# reportes/views.py
-import re
-from rest_framework import views, permissions
-from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
-from django.http import HttpResponse
-
-from cuentas.permissions import RequierePermisos
-from catalogo.models import Producto
-from .runner import run_prompt
-from .services import generar_excel, generar_pdf, get_dashboard_data
+# reportes/models.py
+from django.db import models
+from django.conf import settings
 
 
-@api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated, RequierePermisos])
-def dashboard_data_view(request):
-    data = get_dashboard_data()
-    return Response(data)
+class PromptLog(models.Model):
+    """
+    Log de prompts usados en el módulo de reportes.
+
+    - predicted_intent / confidence: salida opcional del modelo IA (si existe).
+    - resolved_intent: intención final que realmente se ejecutó.
+    - spec_json: spec completa que se usó para construir el queryset.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="prompt_logs",
+    )
+    prompt_text = models.TextField()
+    predicted_intent = models.CharField(max_length=50, null=True, blank=True)
+    confidence = models.FloatField(null=True, blank=True)
+    resolved_intent = models.CharField(max_length=50)  # intención final
+    spec_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # opcional: etiqueta humana (después de revisión manual)
+    human_label = models.CharField(max_length=50, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["predicted_intent"]),
+            models.Index(fields=["resolved_intent"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.created_at:%Y-%m-%d %H:%M}] {self.prompt_text[:60]}"
 
 
-class ReportePromptView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated, RequierePermisos]
-    required_perms = ["reportes.generar"]  # por defecto: ver
+================================================================================
+Archivo: reportes/serializers.py
+================================================================================
 
-    def get_permissions(self):
-        # Exportar requiere permiso distinto
-        self.required_perms = ["reportes.generar"]
-        try:
-            if self.request.method == "POST":
-                prompt = (self.request.data.get("prompt") or "").lower()
-                if "pdf" in prompt or "excel" in prompt or "xlsx" in prompt:
-                    self.required_perms = ["reportes.exportar"]
-        except Exception:
-            pass
-        return [p() for p in self.permission_classes]
+*** ERROR: Archivo no encontrado en la ruta: reportes/serializers.py ***
 
-    def post(self, request):
-        prompt = request.data.get("prompt") or ""
+================================================================================
+Archivo: reportes/admin.py
+================================================================================
 
-        # --- INTENCIÓN: agregar al carrito (detección inmediata, robusta) ---
-        if re.search(r"\b(carrito|compra|pedido)\b", prompt.lower()):
-            m = re.search(r"(?:agrega|añade|pon|mete|quiero)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)", prompt.lower())
-            if m:
-                cantidad = int(m.group(1) or 1)
-                nombre = m.group(2).strip()
-                prod = Producto.objects.filter(nombre__icontains=nombre, activo=True).first()
-                if not prod:
-                    return Response({"error": f"Producto '{nombre}' no encontrado."}, status=404)
-                # En tus modelos: Producto.precio (no existe precio_final)
-                return Response({
-                    "intent": "agregar_carrito",
-                    "producto": {"id": prod.id, "nombre": prod.nombre, "precio": float(prod.precio)},
-                    "cantidad": cantidad
-                })
+from django.contrib import admin
 
-        # --- Interpretar y ejecutar reporte con el motor robusto ---
-        result = run_prompt(prompt)
-        # Compatibilidad: run_prompt ahora devuelve (spec_dict, headers, rows, warnings)
-        if isinstance(result, dict):
-            # Caso parse_only (no debería entrar aquí)
-            spec, headers, rows, warnings = result, [], [], []
-        else:
-            spec, headers, rows, warnings = result
+# Register your models here.
 
-        formato = spec.get("format", "pantalla")
 
-        # Sugerencias UX si faltó info (fechas/agrupación)
-        hints = []
-        if not spec.get("start_date") or not spec.get("end_date"):
-            hints.append("No detecté rango de fechas. Usé últimos 30 días. Puedes decir: 'del 01/09/2025 al 30/09/2025' o 'este mes'.")
-        if not spec.get("dimensions"):
-            hints.append("No detecté agrupación. Prueba: 'por producto', 'por cliente', 'por mes' o varias: 'por cliente y mes'.")
+================================================================================
+Archivo: reportes/management/commands/export_prompts.py
+================================================================================
 
-        # --- Salidas ---
-        if formato == "excel":
-            xls = generar_excel(headers, rows)
-            resp = HttpResponse(
-                xls,
-                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            resp["Content-Disposition"] = 'attachment; filename="reporte.xlsx"'
-            return resp
+# reportes/management/commands/export_prompts.py
+from django.core.management.base import BaseCommand
+from reportes.models import PromptLog
+import csv, os
+from django.conf import settings
 
-        if formato == "pdf":
-            meta = {
-                "start_date": spec.get("start_date"),
-                "end_date": spec.get("end_date"),
-                "group_by": spec.get("dimensions"),
-                "metrics": spec.get("metrics"),
-                "intent": spec.get("intent"),
-            }
-            pdf = generar_pdf(headers, rows, meta)
-            resp = HttpResponse(pdf, content_type="application/pdf")
-            resp["Content-Disposition"] = 'attachment; filename="reporte.pdf"'
-            return resp
+class Command(BaseCommand):
+    help = "Exporta prompts con baja confianza (o sin predicción) para rotular."
 
-        # Preview en pantalla
-        return Response({
-            "headers": headers,
-            "rows": rows,
-            "meta": spec,
-            "warnings": warnings,
-            "hints": hints
-        })
+    def add_arguments(self, parser):
+        parser.add_argument("--min_prob", type=float, default=0.55, help="Umbral de confianza máximo para exportar")
+        parser.add_argument("--limit", type=int, default=200, help="Máximo de filas a exportar")
 
+    def handle(self, *args, **opts):
+        qs = PromptLog.objects.order_by("-created_at")
+        qs = qs.filter(confidence__isnull=True) | qs.filter(confidence__lte=opts["min_prob"])
+        qs = qs.order_by("-created_at")[:opts["limit"]]
+
+        out_dir = os.path.join(settings.BASE_DIR, "ia")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, "to_label.csv")
+
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            # columnas: texto, etiqueta_sugerida, confianza, etiqueta_humana (vacía)
+            w.writerow(["texto", "predicha", "confianza", "etiqueta_humana"])
+            for p in qs:
+                w.writerow([p.prompt_text, p.predicted_intent or "", p.confidence or "", ""])
+
+        self.stdout.write(self.style.SUCCESS(f"Exportado a {out_path}. Rellena 'etiqueta_humana' y agrega filas a ia/training_data.csv"))
+
+
+================================================================================
+Archivo: reportes/management/commands/train_models.py
+================================================================================
+
+# reportes/management/commands/train_models.py
+from django.core.management.base import BaseCommand
+import ia.train_intents as ti
+try:
+    import ia.train_predictions as tp
+    HAS_PRED = True
+except Exception:
+    HAS_PRED = False
+
+class Command(BaseCommand):
+    help = "Reentrena IA de intenciones y, si existe, el modelo de predicciones."
+
+    def handle(self, *args, **options):
+        self.stdout.write(self.style.MIGRATE_HEADING("Entrenando modelo de intenciones..."))
+        res = ti.train_model()
+        self.stdout.write(self.style.SUCCESS(f"✔ CV Acc: {res.cv_accuracy:.3f}"))  # indicador estable
+
+        if HAS_PRED:
+            self.stdout.write(self.style.MIGRATE_HEADING("Entrenando modelo de predicciones..."))
+            try:
+                tp.train_model()
+                self.stdout.write(self.style.SUCCESS("✔ Predicciones: OK"))
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"❌ Predicciones: {e}"))
+
+
+================================================================================
+Archivo: reportes/logger.pyreportes/views.py
+================================================================================
+
+*** ERROR: Archivo no encontrado en la ruta: reportes/logger.pyreportes/views.py ***
 
 ================================================================================
 Archivo: reportes/parser.py
 ================================================================================
 
 # reportes/parser.py
-import os, re
-from datetime import datetime
-from typing import Dict, Any
+import os
+import re
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 from django.conf import settings
+
 try:
     import joblib
 except Exception:
     joblib = None
 
+# ------------------------------
+# Utiles de fecha (simple)
+# ------------------------------
 SPANISH_MONTHS = {
-    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
-    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
-    "noviembre":11,"diciembre":12
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
 }
 
-_MODEL = None
-def _load_model():
-    global _MODEL
-    if _MODEL is not None: return _MODEL
-    if not joblib: return None
-    path = os.path.join(settings.BASE_DIR, "ia", "prompt_intent_model.joblib")
-    if os.path.exists(path):
-        try: _MODEL = joblib.load(path)
-        except Exception: _MODEL = None
-    return _MODEL
-
-def _norm_fecha(s: str) -> str:
-    if "/" in s:
-        d, m, y = s.split("/")
-        return f"{y}-{m}-{d}"
-    return s
-
 def _ultimo_dia_mes(mes: int, year: int) -> int:
-    if mes in (1,3,5,7,8,10,12): return 31
-    if mes == 2: return 29
+    if mes in (1, 3, 5, 7, 8, 10, 12):
+        return 31
+    if mes == 2:
+        # suficiente para reportes (no necesitamos calendario exacto de bisiesto)
+        return 29
     return 30
 
+def _norm_fecha(s: str) -> str:
+    """
+    Normaliza "DD/MM/YYYY" a "YYYY-MM-DD".
+    Si ya está en formato ISO, lo deja igual.
+    """
+    s = s.strip()
+    if "/" in s and len(s.split("/")) == 3:
+        d, m, y = s.split("/")
+        d = d.zfill(2)
+        m = m.zfill(2)
+        return f"{y}-{m}-{d}"
+    return s  # ya está YYYY-MM-DD
+
+# ------------------------------
+# Cargador del modelo IA (opcional)
+# ------------------------------
+_MODEL = None
+
+def _load_model():
+    """Carga ia/prompt_intent_model.joblib si existe (silencioso)."""
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    if not joblib:
+        return None
+    path = os.path.join(settings.BASE_DIR, "ia", "prompt_intent_model.joblib")
+    if os.path.exists(path):
+        try:
+            _MODEL = joblib.load(path)
+        except Exception:
+            _MODEL = None
+    return _MODEL
+
+# ------------------------------
+# Parser principal
+# ------------------------------
 def parse_prompt(prompt: str) -> Dict[str, Any]:
+    """
+    Devuelve un dict con:
+     - intent: ventas | stock | stock_bajo | precios | top_productos | sin_movimiento | agregar_carrito
+     - group_by: 'producto' | 'cliente' | 'categoria'
+     - start_date, end_date (YYYY-MM-DD o None)
+     - format: pantalla | pdf | excel
+     - limit, threshold
+     - categoria, marca, contiene, cliente
+     - order_by, order_dir (para top/menos vendidos)
+    """
     p = (prompt or "").lower().strip()
+
     out: Dict[str, Any] = {
         "intent": "ventas",
         "group_by": "producto",
@@ -163,64 +223,80 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
         "categoria": None,
         "marca": None,
         "contiene": None,
+        "cliente": None,
+        "order_by": None,
+        "order_dir": None,
     }
-    # ---- Nueva intención para el carrito ----
+
+    # ---- 0) INTENCIÓN ESPECIAL: agregar al carrito ----
+    # ejemplos: "agrega 2 licuadoras al carrito", "quiero 3 mouse gamer a la compra"
     if re.search(r"\b(agrega|añade|quiero|pon|mete)\b", p) and re.search(r"\b(carrito|compra|pedido)\b", p):
         out["intent"] = "agregar_carrito"
-        # Extraer cantidad y nombre del producto
-        m_prod = re.search(r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)", p)
+        m_prod = re.search(
+            r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)",
+            p
+        )
         if m_prod:
-            out["limit"] = int(m_prod.group(1) or 1)  # Cantidad (limit)
-            out["contiene"] = m_prod.group(2).strip() # Nombre (contiene)
-        return out # Devolvemos inmediatamente para no confundir con reportes
+            out["limit"] = int(m_prod.group(1) or 1)         # cantidad
+            out["contiene"] = m_prod.group(2).strip()        # nombre del producto
+        return out  # retornamos de inmediato
 
-    # ---- 1. Intento con IA (si el modelo existe) ----
+    # ---- 1) IA: clasifica intención si hay modelo entrenado ----
     model = _load_model()
     if model is not None:
         try:
             proba = model.predict_proba([p])[0]
             labels = model.classes_
             top_i = int(proba.argmax())
-            # Si el modelo está razonablemente seguro, usamos su predicción.
-            if proba[top_i] >= 0.60:
+            if proba[top_i] >= 0.60:  # umbral de confianza
                 out["intent"] = labels[top_i]
         except Exception:
             pass
 
-    # ---- 2. Reglas de intención (si la IA no asignó una o para refinar) ----
+    # ---- 2) Reglas complementarias / override ----
+    # "compras" se considera ventas (sin cambiar el intent si IA ya puso otro)
+    if re.search(r"\b(compra|compras|orden(es)?)\b", p):
+        out["intent"] = "ventas"
+
     if re.search(r"\b(precio|precios|lista de precios)\b", p):
         out["intent"] = "precios"
 
-    elif (
-        re.search(r"\b(stock|inventario|existenc)\b", p)          # menciona stock/inventario
-        or re.search(r"\bmenor stock\b", p)                       # "menor stock"
-        or re.search(r"\bstock menor\b", p)                       # "stock menor"
-    ):
-        # Si habla de stock, por defecto 'stock', y si además sugiere bajo/menor/reponer -> 'stock_bajo'
+    elif re.search(r"\b(stock|inventario|existenc)\b", p):
         out["intent"] = "stock"
-        if re.search(r"\b(poco stock|bajo stock|reponer|renovar|menor stock|stock menor)\b", p):
+        if re.search(r"\b(poco|bajo|menor|reponer|renovar)\b.*\bstock\b", p) or \
+           re.search(r"\bstock\s+(bajo|menor|crítico|critico)\b", p):
             out["intent"] = "stock_bajo"
 
-    elif re.search(r"\b(m[aá]s vendido|top|ranking)\b", p):
+    elif re.search(r"(m[aá]s\s+vendid|top\s*\d+|ranking|estrella|populares)", p):
         out["intent"] = "top_productos"
 
-    elif re.search(r"\b(sin venta|no se vendi[oó]|sin movimiento)\b", p):
+    elif re.search(r"(sin venta|no se vendi[oó]|sin movimiento|no vendidos)", p):
         out["intent"] = "sin_movimiento"
+    
+    elif re.search(r"(menos\s+vendid)", p):
+        # Top invertido: queremos los menos vendidos
+        out["intent"] = "top_productos"
+        out["order_by"] = "unidades"
+        out["order_dir"] = "asc"
 
-    elif out.get("intent") is None: # Si ni la IA ni las reglas anteriores funcionaron
-        out["intent"] = "ventas"
-
-    # ---- Fechas ----
-    r = re.search(r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+    # ---- 3) Fechas ----
+    # formato explícito "del DD/MM/YYYY al DD/MM/YYYY" (o YYYY-MM-DD)
+    r = re.search(
+        r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+        p
+    )
     if r:
         out["start_date"] = _norm_fecha(r.group(1))
-        out["end_date"]   = _norm_fecha(r.group(2))
+        out["end_date"] = _norm_fecha(r.group(2))
     else:
+        # fechas sueltas
         fechas = re.findall(r"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
         if len(fechas) >= 1:
             out["start_date"] = _norm_fecha(fechas[0])
         if len(fechas) >= 2:
             out["end_date"] = _norm_fecha(fechas[1])
+
+        # "mes de septiembre", "mensual de octubre"
         if not out["start_date"] and ("mes de " in p or "mensual" in p):
             m = re.search(r"mes de ([a-zñ]+)", p)
             if m:
@@ -229,9 +305,32 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
                 if mes:
                     year = datetime.now().year
                     out["start_date"] = f"{year}-{mes:02d}-01"
-                    out["end_date"]   = f"{year}-{mes:02d}-{_ultimo_dia_mes(mes, year):02d}"
+                    out["end_date"] = f"{year}-{mes:02d}-{_ultimo_dia_mes(mes, year):02d}"
 
-    # ---- Formato ----
+        # "este mes"
+        if "este mes" in p and not out["start_date"]:
+            today = datetime.now().date()
+            out["start_date"] = today.replace(day=1).strftime("%Y-%m-%d")
+            out["end_date"] = today.strftime("%Y-%m-%d")
+
+        # "hoy"
+        if "hoy" in p and not out["start_date"]:
+            today = datetime.now().date().strftime("%Y-%m-%d")
+            out["start_date"] = today
+            out["end_date"] = today
+
+        # "ayer"
+        if "ayer" in p and not out["start_date"]:
+            d = datetime.now().date() - timedelta(days=1)
+            out["start_date"] = d.strftime("%Y-%m-%d")
+            out["end_date"] = d.strftime("%Y-%m-%d")
+
+        # "último mes", "mes pasado" (dejamos que el builder use fallback 30 días si no se setea)
+        if ("último mes" in p or "ultimo mes" in p or "mes pasado" in p) and not out["start_date"]:
+            # sin setear: el service / builder aplica fallback (últimos 30 días)
+            pass
+
+    # ---- 4) Formato ----
     if "pdf" in p:
         out["format"] = "pdf"
     elif "excel" in p or "xlsx" in p:
@@ -239,31 +338,66 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
     else:
         out["format"] = "pantalla"
 
-    # ---- Limit (dos patrones) ----
-    # 1) "top 3"
+    # ---- 5) Limit (top) ----
     mtop = re.search(r"\btop\s+(\d{1,3})\b", p)
     if mtop:
         out["limit"] = int(mtop.group(1))
-    # 2) "los 3 productos ..." | "3 productos ..." → lo usamos como limit
     if out["limit"] is None:
         mcount = re.search(r"\b(?:los\s+)?(\d{1,3})\s+(?:productos?|items?)\b", p)
         if mcount:
             out["limit"] = int(mcount.group(1))
 
-    # ---- Threshold ----
-    mth = re.search(r"(menor(?:\s*a)?|<)\s*(\d{1,6})", p)
+    # ---- 6) Threshold (para stock bajo) ----
+    mth = re.search(r"(?:menor(?:\s*a)?|<)\s*(\d{1,6})", p)
     if mth:
-        out["threshold"] = int(mth.group(2))
+        out["threshold"] = int(
+            mth.group(2) if mth.lastindex and mth.group(2) else mth.group(1)
+        )
 
-    # ---- Filtros ----
+    # ---- 7) Filtros simples (categoría, marca, nombre de producto) ----
     mc = re.search(r"categor[ií]a\s+([a-z0-9áéíóúñ \-_/]+)", p)
-    if mc: out["categoria"] = mc.group(1).strip()
+    if mc:
+        out["categoria"] = mc.group(1).strip()
 
     mm = re.search(r"marca\s+([a-z0-9áéíóúñ \-_/]+)", p)
-    if mm: out["marca"] = mm.group(1).strip()
+    if mm:
+        out["marca"] = mm.group(1).strip()
 
-    mn = re.search(r"(que contenga|contiene|con nombre)\s+([a-z0-9áéíóúñ \-_/]+)", p)
-    if mn: out["contiene"] = mn.group(2).strip()
+    mn = re.search(r"(?:que\s+contenga|contiene|con\s+nombre)\s+([a-z0-9áéíóúñ \-_/]+)", p)
+    if mn:
+        out["contiene"] = mn.group(1).strip()
+
+    # ---- 8) Filtro por cliente (nombre / doc) ----
+    # ejemplos:
+    #   "del cliente juan perez"
+    #   "para el cliente carlos"
+    #   "ventas del cliente maria en este mes"
+    mcli = re.search(r"(?:del|de|para(?:\s+el)?)\s+cliente\s+([a-z0-9áéíóúñ ]{2,})", p)
+    if mcli:
+        raw = mcli.group(1).strip()
+        # cortamos en palabras típicas que marcan el fin del nombre
+        raw = re.split(r"\s+(?:en|del|de|desde|hasta|al|por|y|con|que|mes|año|anio)\b", raw)[0].strip()
+        if raw:
+            out["cliente"] = raw
+
+    # ---- 9) Orden (legacy: por si lo necesitas desde services) ----
+    if re.search(r"(menor a mayor|ascendente|asc\b)", p):
+        out["order_dir"] = "asc"
+    elif re.search(r"(mayor a menor|descendente|desc\b)", p):
+        out["order_dir"] = "desc"
+
+    if re.search(r"ordenad[oa]s?\s+por\s+stock", p):
+        out["order_by"] = "stock"
+
+    # ---- 10) Agrupación (group_by) ----
+    # "por cliente", "por categoría", "por producto"
+    if re.search(r"por\s+cliente", p):
+        out["group_by"] = "cliente"
+    elif re.search(r"por\s+categori", p):
+        out["group_by"] = "categoria"
+    elif re.search(r"por\s+producto", p):
+        out["group_by"] = "producto"
+    # (default ya es "producto")
 
     return out
 
@@ -273,74 +407,148 @@ Archivo: reportes/runner.py
 ================================================================================
 
 # reportes/runner.py
-from typing import Tuple, List, Dict, Any
-from .intent_parser import parse_prompt_to_spec
-from .query_builder import build_queryset
-from .queries_extra import productos_sin_movimiento
+from typing import Tuple, List, Dict, Any, Optional
+
+from .parser import parse_prompt
 from .services import (
-    consultar_stock, consultar_stock_bajo, consultar_precios
+    consultar_ventas,
+    consultar_top_productos,
+    consultar_sin_movimiento,
+    consultar_stock,
+    consultar_stock_bajo,
+    consultar_precios,
 )
+from .logger import log_prompt
 
-# Helper: Spec(dataclass) -> dict (para mantener compatibilidad con tu view)
-def _spec_to_dict(spec) -> Dict[str, Any]:
-    return {
-        "intent": spec.intent,
-        "metrics": list(spec.metrics or []),
-        "dimensions": list(spec.dimensions or []),
-        "start_date": spec.start_date,
-        "end_date": spec.end_date,
-        "filters": [f.__dict__ for f in (spec.filters or [])],
-        "order_by": spec.order_by,
-        "order_dir": spec.order_dir,
-        "limit": spec.limit,
-        "format": spec.format,
-    }
+# Si quieres seguir usando query_builder como fallback:
+try:
+    from .query_builder import build_queryset
+except Exception:   # pragma: no cover
+    build_queryset = None
 
-def run_prompt(prompt: str, parse_only: bool = False) -> Tuple[Dict[str, Any], List[str], List[List], List[str]]:
+
+def _safe_log(user, prompt: str, spec: Dict[str, Any]) -> None:
     """
-    Traduce el prompt → Spec robusta y ejecuta la consulta segura.
-    Devuelve: (spec_dict, headers, rows, warnings)
+    Loguea el prompt sin romper el flujo si hay errores.
     """
-    spec, warnings = parse_prompt_to_spec(prompt)
+    try:
+        # De momento no tenemos "predicted" separado del parser,
+        # así que lo dejamos en None.
+        log_prompt(user, prompt, None, spec.get("intent", "ventas"), spec)
+    except Exception:
+        pass
+
+
+def run_prompt(prompt: str, user=None, parse_only: bool = False):
+    """
+    Interpreta un prompt en lenguaje natural y ejecuta el reporte correspondiente.
+
+    Retorna:
+      - Si parse_only=True → solo el spec (dict).
+      - Si parse_only=False → (spec, headers, rows, warnings)
+    """
+    spec = parse_prompt(prompt or "")
+    _safe_log(user, prompt, spec)
 
     if parse_only:
-        return _spec_to_dict(spec)
+        return spec
 
-    # Intenciones no-ventas (delegamos a tus services existentes)
-    if spec.intent == "stock":
+    intent = spec.get("intent", "ventas")
+    headers: List[str] = []
+    rows: List[List[Any]] = []
+    warnings: List[str] = []
+
+    start_date = spec.get("start_date")
+    end_date = spec.get("end_date")
+    group_by = spec.get("group_by") or "producto"
+    categoria = spec.get("categoria")
+    marca = spec.get("marca")
+    contiene = spec.get("contiene")
+    cliente = spec.get("cliente")
+    limit = spec.get("limit")
+    threshold = spec.get("threshold")
+
+    # ----------------------------------------
+    # 1) Intención: ventas / productos comprados
+    # ----------------------------------------
+    if intent == "ventas":
+        headers, rows = consultar_ventas(
+            start_date,
+            end_date,
+            group_by,
+            cliente=cliente,
+            contiene=contiene,
+        )
+
+    # ----------------------------------------
+    # 2) Intención: ranking de productos
+    # ----------------------------------------
+    elif intent == "top_productos":
+        headers, rows = consultar_top_productos(
+            start_date,
+            end_date,
+            limit,
+            categoria=categoria,
+        )
+        if spec.get("order_dir") == "asc":
+            # para "menos vendidos": invertimos el orden
+            rows = list(reversed(rows))
+
+    # ----------------------------------------
+    # 3) Intención: productos sin movimiento
+    # ----------------------------------------
+    elif intent == "sin_movimiento":
+        headers, rows = consultar_sin_movimiento(
+            start_date,
+            end_date,
+            categoria=categoria,
+        )
+
+    # ----------------------------------------
+    # 4) Intención: stock / stock bajo / precios
+    # ----------------------------------------
+    elif intent == "stock":
         headers, rows = consultar_stock(
-            # filtros posibles en el DSL:
-            next((f.value for f in spec.filters if f.field == "categoria"), None),
-            next((f.value for f in spec.filters if f.field == "marca"), None),
-            next((f.value for f in spec.filters if f.field == "producto"), None),
+            categoria=categoria,
+            marca=marca,
+            contiene=contiene,
         )
-    elif spec.intent == "stock_bajo":
-        threshold = None
-        for f in spec.filters:
-            if f.field in ("stock", "cantidad") and f.op in ("lt", "lte"):
-                threshold = f.value
-        headers, rows = consultar_stock_bajo(
-            threshold,
-            next((f.value for f in spec.filters if f.field == "categoria"), None),
-            spec.limit,
-        )
-    elif spec.intent == "precios":
-        headers, rows = consultar_precios(
-            next((f.value for f in spec.filters if f.field == "categoria"), None),
-            next((f.value for f in spec.filters if f.field == "marca"), None),
-            next((f.value for f in spec.filters if f.field == "producto"), None),
-        )
-    elif spec.intent == "sin_movimiento":
-        headers, rows = productos_sin_movimiento(
-            spec.start_date,
-            spec.end_date,
-            next((f.value for f in spec.filters if f.field == "categoria"), None),
-        )
-    else:
-        # "ventas", "top", y cualquier consulta con métricas/dimensiones
-        headers, rows = build_queryset(spec)
 
-    return _spec_to_dict(spec), headers, rows, warnings
+    elif intent == "stock_bajo":
+        headers, rows = consultar_stock_bajo(
+            threshold=threshold,
+            categoria=categoria,
+            limit=limit,
+        )
+
+    elif intent == "precios":
+        headers, rows = consultar_precios(
+            categoria=categoria,
+            marca=marca,
+            contiene=contiene,
+        )
+
+    # ----------------------------------------
+    # 5) Fallback / casos no contemplados
+    # ----------------------------------------
+    else:
+        if build_queryset is not None:
+            try:
+                # build_queryset puede aceptar dict tal cual,
+                # o puedes adaptarlo aquí si necesita otra estructura.
+                headers, rows = build_queryset(spec)
+            except Exception as e:
+                warnings.append(
+                    f"No supe cómo construir un reporte específico para la intención '{intent}'. "
+                    f"Detalle: {e}"
+                )
+        else:
+            warnings.append(
+                f"No existe implementación para la intención '{intent}'. "
+                "Devuelvo un resultado vacío."
+            )
+
+    return spec, headers, rows, warnings
 
 
 ================================================================================
@@ -349,24 +557,23 @@ Archivo: reportes/services.py
 
 # reportes/services.py
 from io import BytesIO
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, Optional
 
-from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Sum, F, Avg
+from django.utils import timezone
+from django.db.models import Sum, F, Avg, Q
 from django.db.models.functions import TruncDay, TruncMonth
 
-# Modelos
 from ventas.models import Venta, ItemVenta
 from clientes.models import Cliente
-from catalogo.models import Producto  # ajusta si tu modelo está en otra app o se llama distinto
+from catalogo.models import Producto
 
 # Excel
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, numbers, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# PDF (ReportLab/Platypus)
+# PDF
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
@@ -375,143 +582,138 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 
 # =========================
-# Consultas por intención
+# Consultas de ventas
 # =========================
 
-def consultar_ventas(start_date: str | None, end_date: str | None, group_by: str) -> Tuple[List[str], List[List]]:
-    qs = ItemVenta.objects.select_related("venta", "producto", "venta__cliente", "producto__categoria")
+def consultar_ventas(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    group_by: str,
+    cliente: Optional[str] = None,
+    contiene: Optional[str] = None,
+) -> Tuple[List[str], List[List]]:
+    """
+    Reportes de ventas.
+
+    - group_by = 'producto'  → productos vendidos
+    - group_by = 'cliente'   → ventas por cliente
+    - group_by = 'categoria' → ventas por categoría
+    """
+    qs = ItemVenta.objects.select_related(
+        "venta", "producto", "venta__cliente", "producto__categoria"
+    )
 
     if start_date:
         qs = qs.filter(venta__creado_en__date__gte=start_date)
     if end_date:
         qs = qs.filter(venta__creado_en__date__lte=end_date)
 
-    qs = qs.filter(venta__estado__in=["pagada"])  # ventas cerradas
+    qs = qs.filter(venta__estado__in=["pagada"])
+
+    if cliente:
+        qs = qs.filter(
+            Q(venta__cliente__nombre__icontains=cliente)
+            | Q(venta__cliente__apellido__icontains=cliente)
+            | Q(venta__cliente__ci_nit__icontains=cliente)
+        )
+
+    if contiene:
+        qs = qs.filter(producto__nombre__icontains=contiene)
 
     rows: List[List] = []
     headers: List[str] = []
 
     if group_by == "producto":
-        agg = (qs.values(n=F("producto__nombre"))
-                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
-                 .order_by("-monto", "-cantidad", "n"))
-        headers = ["Producto","Cantidad total","Monto total"]
-        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+        agg = (
+            qs.values(nombre=F("producto__nombre"))
+            .annotate(
+                cantidad=Sum("cantidad"),
+                monto=Sum(F("subtotal")),
+            )
+            .order_by("-monto", "-cantidad", "nombre")
+        )
+        headers = ["Producto", "Cantidad total", "Monto total"]
+        rows = [
+            [r["nombre"], int(r["cantidad"] or 0), float(r["monto"] or 0.0)]
+            for r in agg
+        ]
 
     elif group_by == "cliente":
-        agg = (qs.values(n=F("venta__cliente__nombre"))
-                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
-                 .order_by("-monto", "-cantidad", "n"))
-        headers = ["Cliente","Cantidad total","Monto total"]
-        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+        agg = (
+            qs.values(
+                cliente=F("venta__cliente__nombre"),
+                doc=F("venta__cliente__ci_nit"),
+            )
+            .annotate(
+                cantidad=Sum("cantidad"),
+                monto=Sum(F("subtotal")),
+            )
+            .order_by("-monto", "-cantidad", "cliente")
+        )
+        headers = ["Cliente", "Documento", "Cantidad total", "Monto total"]
+        rows = [
+            [
+                r["cliente"] or "SIN NOMBRE",
+                r["doc"] or "",
+                int(r["cantidad"] or 0),
+                float(r["monto"] or 0.0),
+            ]
+            for r in agg
+        ]
 
     elif group_by == "categoria":
-        agg = (qs.values(n=F("producto__categoria__nombre"))
-                 .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
-                 .order_by("-monto", "-cantidad", "n"))
-        headers = ["Categoría","Cantidad total","Monto total"]
-        rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
-
-    elif group_by == "mes":
         agg = (
-            qs.annotate(period=TruncMonth("venta__creado_en"))
-              .values("period")
-              .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
-              .order_by("period")
+            qs.values(cat=F("producto__categoria__nombre"))
+            .annotate(
+                cantidad=Sum("cantidad"),
+                monto=Sum(F("subtotal")),
+            )
+            .order_by("-monto", "-cantidad", "cat")
         )
-        headers = ["Mes (YYYY-MM)", "Cantidad total", "Monto total"]
-        rows = [[r["period"].strftime("%Y-%m"), int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
-
-    return headers, rows
-
-
-def consultar_stock(categoria: str | None = None, marca: str | None = None, contiene: str | None = None):
-    qs = Producto.objects.select_related("categoria")
-    if categoria:
-        qs = qs.filter(categoria__nombre__icontains=categoria)
-    if marca and hasattr(Producto, "marca"):
-        qs = qs.filter(marca__nombre__icontains=marca)
-    if contiene:
-        qs = qs.filter(nombre__icontains=contiene)
-
-    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Precio"]
-    rows = []
-    for p in qs.order_by("nombre"):
-        rows.append([
-            p.nombre,
-            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
-            getattr(p, "stock", 0),
-            getattr(p, "stock_minimo", 0),
-            float(getattr(p, "precio", 0.0)),
-        ])
-    return headers, rows
-
-
-def consultar_stock_bajo(
-    threshold: int | None = None,
-    categoria: str | None = None,
-    limit: int | None = None
-):
-    """
-    Devuelve productos con bajo stock.
-    Si threshold se especifica, usa stock < threshold.
-    Si no, usa stock < stock_minimo (si existe).
-    """
-    qs = Producto.objects.select_related("categoria")
-
-    if categoria:
-        qs = qs.filter(categoria__nombre__icontains=categoria)
-
-    # --- Filtro principal ---
-    if threshold is not None:
-        qs = qs.filter(stock__lt=threshold)
-    elif hasattr(Producto, "stock_minimo"):
-        qs = qs.filter(stock__lt=F("stock_minimo"))
+        headers = ["Categoría", "Cantidad total", "Monto total"]
+        rows = [
+            [
+                r["cat"] or "SIN CATEGORÍA",
+                int(r["cantidad"] or 0),
+                float(r["monto"] or 0.0),
+            ]
+            for r in agg
+        ]
     else:
-        qs = qs.filter(stock__lt=10)  # fallback
+        agg = (
+            qs.values(
+                folio=F("venta__folio"),
+                fecha=F("venta__creado_en__date"),
+                cliente=F("venta__cliente__nombre"),
+            )
+            .annotate(
+                cantidad=Sum("cantidad"),
+                monto=Sum(F("subtotal")),
+            )
+            .order_by("-fecha", "-monto")
+        )
+        headers = ["Folio", "Fecha", "Cliente", "Cantidad total", "Monto total"]
+        rows = [
+            [
+                r["folio"],
+                r["fecha"].strftime("%Y-%m-%d") if r["fecha"] else "",
+                r["cliente"] or "SIN NOMBRE",
+                int(r["cantidad"] or 0),
+                float(r["monto"] or 0.0),
+            ]
+            for r in agg
+        ]
 
-    # --- Orden y límite ---
-    qs = qs.order_by("stock", "nombre")
-    if limit:
-        qs = qs[:limit]
-
-    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Sugerencia"]
-    rows = []
-    for p in qs:
-        minimo = getattr(p, "stock_minimo", None)
-        sug = f"Reponer hasta {minimo}" if minimo else "Reponer"
-        rows.append([
-            p.nombre,
-            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
-            getattr(p, "stock", 0),
-            minimo if minimo is not None else "-",
-            sug
-        ])
     return headers, rows
 
 
-def consultar_precios(categoria: str | None = None, marca: str | None = None, contiene: str | None = None):
-    qs = Producto.objects.select_related("categoria")
-    if categoria:
-        qs = qs.filter(categoria__nombre__icontains=categoria)
-    if marca and hasattr(Producto, "marca"):
-        qs = qs.filter(marca__nombre__icontains=marca)
-    if contiene:
-        qs = qs.filter(nombre__icontains=contiene)
-
-    headers = ["Producto", "Categoría", "Precio", "Stock"]
-    rows = []
-    for p in qs.order_by("nombre"):
-        rows.append([
-            p.nombre,
-            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
-            float(getattr(p, "precio", 0.0)),
-            getattr(p, "stock", 0),
-        ])
-    return headers, rows
-
-
-def consultar_top_productos(start_date: str | None, end_date: str | None, limit: int | None, categoria: str | None = None):
+def consultar_top_productos(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    limit: Optional[int],
+    categoria: Optional[str] = None,
+) -> Tuple[List[str], List[List]]:
+    """Ranking de productos más vendidos en un período."""
     qs = ItemVenta.objects.select_related("venta", "producto", "producto__categoria")
     if start_date:
         qs = qs.filter(venta__creado_en__date__gte=start_date)
@@ -521,18 +723,27 @@ def consultar_top_productos(start_date: str | None, end_date: str | None, limit:
     if categoria:
         qs = qs.filter(producto__categoria__nombre__icontains=categoria)
 
-    agg = (qs.values(n=F("producto__nombre"))
-             .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
-             .order_by("-cantidad", "-monto", "n"))
+    agg = (
+        qs.values(n=F("producto__nombre"))
+        .annotate(cantidad=Sum("cantidad"), monto=Sum(F("subtotal")))
+        .order_by("-cantidad", "-monto", "n")
+    )
     if limit:
         agg = agg[:limit]
 
     headers = ["Producto", "Cantidad vendida", "Monto total"]
-    rows = [[r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg]
+    rows = [
+        [r["n"], int(r["cantidad"] or 0), float(r["monto"] or 0)] for r in agg
+    ]
     return headers, rows
 
 
-def consultar_sin_movimiento(start_date: str | None, end_date: str | None, categoria: str | None = None):
+def consultar_sin_movimiento(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    categoria: Optional[str] = None,
+) -> Tuple[List[str], List[List]]:
+    """Productos que NO tuvieron ventas en el período."""
     vendibles = ItemVenta.objects.select_related("venta", "producto")
     if start_date:
         vendibles = vendibles.filter(venta__creado_en__date__gte=start_date)
@@ -547,18 +758,125 @@ def consultar_sin_movimiento(start_date: str | None, end_date: str | None, categ
     headers = ["Producto", "Categoría", "Stock", "Precio", "Observación"]
     rows = []
     for p in qs.order_by("nombre"):
-        rows.append([
-            p.nombre,
-            getattr(p.categoria, "nombre", "") if getattr(p, "categoria", None) else "",
-            getattr(p, "stock", 0),
-            float(getattr(p, "precio", 0.0)),
-            "Sin ventas en el período"
-        ])
+        rows.append(
+            [
+                p.nombre,
+                getattr(p.categoria, "nombre", "")
+                if getattr(p, "categoria", None)
+                else "",
+                getattr(p, "stock", 0),
+                float(getattr(p, "precio", 0.0)),
+                "Sin ventas en el período",
+            ]
+        )
     return headers, rows
 
 
 # =========================
-# Exportadores
+# Stock / Precios
+# =========================
+
+def consultar_stock(
+    categoria: Optional[str] = None,
+    marca: Optional[str] = None,
+    contiene: Optional[str] = None,
+):
+    qs = Producto.objects.select_related("categoria")
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+    if marca and hasattr(Producto, "marca"):
+        qs = qs.filter(marca__nombre__icontains=marca)
+    if contiene:
+        qs = qs.filter(nombre__icontains=contiene)
+
+    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Precio"]
+    rows = []
+    for p in qs.order_by("nombre"):
+        rows.append(
+            [
+                p.nombre,
+                getattr(p.categoria, "nombre", "")
+                if getattr(p, "categoria", None)
+                else "",
+                getattr(p, "stock", 0),
+                getattr(p, "stock_minimo", 0),
+                float(getattr(p, "precio", 0.0)),
+            ]
+        )
+    return headers, rows
+
+
+def consultar_stock_bajo(
+    threshold: Optional[int] = None,
+    categoria: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    qs = Producto.objects.select_related("categoria")
+
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+
+    if threshold is not None:
+        qs = qs.filter(stock__lt=threshold)
+    elif hasattr(Producto, "stock_minimo"):
+        qs = qs.filter(stock__lt=F("stock_minimo"))
+    else:
+        qs = qs.filter(stock__lt=10)
+
+    qs = qs.order_by("stock", "nombre")
+    if limit:
+        qs = qs[:limit]
+
+    headers = ["Producto", "Categoría", "Stock", "Stock mínimo", "Sugerencia"]
+    rows = []
+    for p in qs:
+        minimo = getattr(p, "stock_minimo", None)
+        sug = f"Reponer hasta {minimo}" if minimo else "Reponer"
+        rows.append(
+            [
+                p.nombre,
+                getattr(p.categoria, "nombre", "")
+                if getattr(p, "categoria", None)
+                else "",
+                getattr(p, "stock", 0),
+                minimo if minimo is not None else "-",
+                sug,
+            ]
+        )
+    return headers, rows
+
+
+def consultar_precios(
+    categoria: Optional[str] = None,
+    marca: Optional[str] = None,
+    contiene: Optional[str] = None,
+):
+    qs = Producto.objects.select_related("categoria")
+    if categoria:
+        qs = qs.filter(categoria__nombre__icontains=categoria)
+    if marca and hasattr(Producto, "marca"):
+        qs = qs.filter(marca__nombre__icontains=marca)
+    if contiene:
+        qs = qs.filter(nombre__icontains=contiene)
+
+    headers = ["Producto", "Categoría", "Precio", "Stock"]
+    rows = []
+    for p in qs.order_by("nombre"):
+        rows.append(
+            [
+                p.nombre,
+                getattr(p.categoria, "nombre", "")
+                if getattr(p, "categoria", None)
+                else "",
+                float(getattr(p, "precio", 0.0)),
+                getattr(p, "stock", 0),
+            ]
+        )
+    return headers, rows
+
+
+# =========================
+# Exportadores Excel / PDF
 # =========================
 
 def generar_excel(headers: List[str], rows: List[List]) -> bytes:
@@ -566,7 +884,6 @@ def generar_excel(headers: List[str], rows: List[List]) -> bytes:
     ws = wb.active
     ws.title = "Reporte"
 
-    # Encabezado
     ws.append(headers)
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
     header_ink = Font(bold=True, color="FFFFFF")
@@ -576,14 +893,11 @@ def generar_excel(headers: List[str], rows: List[List]) -> bytes:
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # Filas
     for r in rows:
         ws.append(r)
 
-    # Congelar encabezado
     ws.freeze_panes = "A2"
 
-    # Formatos numéricos
     if headers and "monto" in headers[-1].lower():
         for row_idx in range(2, ws.max_row + 1):
             c = ws.cell(row=row_idx, column=len(headers))
@@ -599,14 +913,12 @@ def generar_excel(headers: List[str], rows: List[List]) -> bytes:
             for row_idx in range(2, ws.max_row + 1):
                 ws.cell(row=row_idx, column=idx).alignment = Alignment(horizontal="center")
 
-    # Bordes
     thin = Side(style="thin", color="DDDDDD")
     border = Border(top=thin, left=thin, right=thin, bottom=thin)
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=len(headers)):
         for cell in row:
             cell.border = border
 
-    # Auto-ancho
     for col_idx in range(1, len(headers) + 1):
         max_len = 0
         for row_idx in range(1, ws.max_row + 1):
@@ -626,8 +938,10 @@ def generar_pdf(headers: List[str], rows: List[List], meta: Dict[str, Any]) -> b
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=2*cm, rightMargin=2*cm,
-        topMargin=1.8*cm, bottomMargin=1.8*cm
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=1.8 * cm,
+        bottomMargin=1.8 * cm,
     )
 
     styles = getSampleStyleSheet()
@@ -651,13 +965,16 @@ def generar_pdf(headers: List[str], rows: List[List], meta: Dict[str, Any]) -> b
 
     elems = []
     elems.append(Paragraph("Reporte", title_style))
+
     rango = f"Rango: {meta.get('start_date') or '-'} a {meta.get('end_date') or '-'}"
     detalles = []
     if meta.get("group_by"):
         detalles.append(f"Grupo: {meta.get('group_by')}")
     if meta.get("intent"):
-        detalles.append(f"Intent: {meta.get('intent')}")
-    sub = f"{rango}" + (f" | {' | '.join(detalles)}" if detalles else "")
+        detalles.append(f"Intento: {meta.get('intent')}")
+    if meta.get("metrics"):
+        detalles.append(f"Métricas: {', '.join(meta.get('metrics'))}")
+    sub = rango + (f" | {' | '.join(detalles)}" if detalles else "")
     elems.append(Paragraph(sub, meta_style))
     elems.append(Spacer(1, 6))
 
@@ -667,24 +984,27 @@ def generar_pdf(headers: List[str], rows: List[List], meta: Dict[str, Any]) -> b
     data.extend(rows or [])
 
     table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0f172a")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,0), 10),
-        ("ALIGN", (0,0), (-1,0), "CENTER"),
-        ("BOTTOMPADDING", (0,0), (-1,0), 8),
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 10),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 1), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e5e7eb")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [colors.white, colors.HexColor("#f8fafc")]),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
 
-        ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
-        ("FONTSIZE", (0,1), (-1,-1), 9),
-        ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#e5e7eb")),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-    ]))
-
-    # Alinea última columna si parece ser monto/total
     if headers and any(k in headers[-1].lower() for k in ("monto", "total", "precio")):
-        table.setStyle(TableStyle([("ALIGN", (-1,1), (-1,-1), "RIGHT")]))
+        table.setStyle(TableStyle([("ALIGN", (-1, 1), (-1, -1), "RIGHT")]))
 
     elems.append(table)
     doc.build(elems)
@@ -697,7 +1017,7 @@ def generar_pdf(headers: List[str], rows: List[List], meta: Dict[str, Any]) -> b
 # Datos para Dashboard
 # =========================
 
-def get_dashboard_data():
+def get_dashboard_data() -> Dict[str, Any]:
     now = timezone.now()
     today = now.date()
     start_of_month = today.replace(day=1)
@@ -705,10 +1025,24 @@ def get_dashboard_data():
 
     ventas_pagadas = Venta.objects.filter(estado="pagada")
 
-    ventas_hoy = ventas_pagadas.filter(creado_en__date=today).aggregate(total=Sum("total"))["total"] or 0
-    ventas_mes = ventas_pagadas.filter(creado_en__gte=start_of_month).aggregate(total=Sum("total"))["total"] or 0
-    ticket_promedio = ventas_pagadas.filter(creado_en__gte=start_of_month).aggregate(avg=Avg("total"))["avg"] or 0
-    nuevos_clientes_mes = Cliente.objects.filter(creado_en__gte=start_of_month).count()
+    ventas_hoy = (
+        ventas_pagadas.filter(creado_en__date=today)
+        .aggregate(total=Sum("total"))["total"]
+        or 0
+    )
+    ventas_mes = (
+        ventas_pagadas.filter(creado_en__gte=start_of_month)
+        .aggregate(total=Sum("total"))["total"]
+        or 0
+    )
+    ticket_promedio = (
+        ventas_pagadas.filter(creado_en__gte=start_of_month)
+        .aggregate(avg=Avg("total"))["avg"]
+        or 0
+    )
+    nuevos_clientes_mes = Cliente.objects.filter(
+        creado_en__gte=start_of_month
+    ).count()
 
     ventas_diarias = (
         ventas_pagadas.filter(creado_en__gte=start_of_30_days)
@@ -739,8 +1073,12 @@ def get_dashboard_data():
             for item in ventas_diarias
         ],
         "ventas_por_categoria": [
-            {"categoria": item["items__producto__categoria__nombre"], "total": float(item["total"])}
-            for item in ventas_por_categoria if item["items__producto__categoria__nombre"]
+            {
+                "categoria": item["items__producto__categoria__nombre"],
+                "total": float(item["total"]),
+            }
+            for item in ventas_por_categoria
+            if item["items__producto__categoria__nombre"]
         ],
         "ultimas_ventas": [
             {
@@ -764,16 +1102,15 @@ from .views import ReportePromptView, dashboard_data_view
 
 urlpatterns = [
     path("prompt/", ReportePromptView.as_view(), name="reporte_prompt"),
-    # Nueva ruta para los datos del dashboard
     path("dashboard/", dashboard_data_view, name="dashboard_data"),
 ]
 
 
 ================================================================================
-Archivo: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyia/train_intents.py
+Archivo: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyreportes/renderers.pyia/train_intents.py
 ================================================================================
 
-*** ERROR: Archivo no encontrado en la ruta: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyia/train_intents.py ***
+*** ERROR: Archivo no encontrado en la ruta: reportes/catalog.pyreportes/dsl.pyreportes/intent_parser.pyreportes/queries_extra.pyreportes/query_builder.pyreportes/renderers.pyia/train_intents.py ***
 
 ================================================================================
 Archivo: ia/train_predictions.py
@@ -889,23 +1226,375 @@ def generate_predictions(days_to_predict=30):
     return [{"fecha": date.strftime('%Y-%m-%d'), "prediccion": float(pred)} for date, pred in zip(future_dates, predictions)]
 
 ================================================================================
-Archivo: analitica/views.py
+Archivo: ia/dataset
+================================================================================
+
+*** ERROR: Archivo no encontrado en la ruta: ia/dataset ***
+
+================================================================================
+Archivo: ia/models.py
+================================================================================
+
+from django.db import models
+
+# Create your models here.
+
+
+================================================================================
+Archivo: ia/views.py
 ================================================================================
 
 # analitica/views.py
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import permissions
 
-# Esta importación ahora funcionará porque movimos el archivo al backend.
+# Predicciones de ventas
 from ia.train_predictions import generate_predictions
 
-@api_view(['GET'])
+# Interpretación de comandos de voz
+from ia.voice_intent import parse_voice_command
+
+
+@api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def sales_predictions_view(request):
-    days = int(request.query_params.get('days', 30))
+    days = int(request.query_params.get("days", 30))
     data = generate_predictions(days_to_predict=days)
     return Response(data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def voice_intent_view(request):
+    """
+    Recibe texto de voz y devuelve la intención detectada.
+
+    body JSON:
+    {
+        "text": "agrega dos auriculares bt al carrito"
+    }
+
+    respuesta:
+    {
+        "raw": "...",
+        "action": "add",
+        "quantity": 2,
+        "product_name": "auriculares bt"
+    }
+    """
+    text = request.data.get("text", "") or ""
+    intent = parse_voice_command(text)
+
+    return Response(
+        {
+            "raw": intent.raw,
+            "action": intent.action,
+            "quantity": intent.quantity,
+            "product_name": intent.product_name,
+        }
+    )
+
+
+================================================================================
+Archivo: ia/voice_intent.py
+================================================================================
+
+# ia/voice_intent.py
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+from catalogo.models import Producto
+
+SPANISH_NUMBERS = {
+    "un": 1,
+    "uno": 1,
+    "una": 1,
+    "dos": 2,
+    "tres": 3,
+    "cuatro": 4,
+    "cinco": 5,
+    "seis": 6,
+    "siete": 7,
+    "ocho": 8,
+    "nueve": 9,
+    "diez": 10,
+}
+
+
+@dataclass
+class VoiceIntent:
+    raw: str
+    # add | remove | clear | checkout | unknown
+    action: str
+    quantity: int
+    product_name: str
+
+
+def _parse_quantity(text: str) -> int:
+    text = text.lower()
+
+    m = re.search(r"(\d+)", text)
+    if m:
+        try:
+            n = int(m.group(1))
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+
+    for word, value in SPANISH_NUMBERS.items():
+        if word in text:
+            return value
+
+    return 1
+
+
+def _clean_product_name(text: str) -> str:
+    text = text.lower()
+
+    for r in [
+        "al carrito",
+        "del carrito",
+        "a la cesta",
+        "de la cesta",
+        "por favor",
+        "porfa",
+    ]:
+        text = text.replace(r, "")
+
+    text = re.sub(r"\d+", " ", text)
+
+    fillers = [
+        "un",
+        "una",
+        "uno",
+        "unos",
+        "unas",
+        "dos",
+        "tres",
+        "cuatro",
+        "cinco",
+        "seis",
+        "siete",
+        "ocho",
+        "nueve",
+        "diez",
+    ]
+    for f in fillers:
+        text = re.sub(rf"\b{f}\b", " ", text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def parse_voice_command(text: str) -> VoiceIntent:
+    raw = text
+    text = (text or "").lower().strip()
+
+    if not text:
+        return VoiceIntent(raw=raw, action="unknown", quantity=0, product_name="")
+
+    # 0) Finalizar compra / pagar / crear venta
+    checkout_phrases = [
+        "finalizar compra",
+        "finaliza la compra",
+        "terminar compra",
+        "termina la compra",
+        "quiero pagar",
+        "pagar ahora",
+        "realizar pago",
+        "realiza el pago",
+        "cobrar la compra",
+        "cobra la compra",
+        "cobrar",
+        "crear venta",
+        "crear la venta",
+        "registrar venta",
+        "registrar la venta",
+        "finalizar la venta",
+    ]
+    if any(phrase in text for phrase in checkout_phrases):
+        return VoiceIntent(raw=raw, action="checkout", quantity=0, product_name="")
+
+    # 1) Vaciar carrito
+    if (
+        "vaciar carrito" in text
+        or "limpiar carrito" in text
+        or "borrar carrito" in text
+        or "borra el carrito" in text
+    ):
+        return VoiceIntent(raw=raw, action="clear", quantity=0, product_name="")
+
+    # 2) Quitar / remover / eliminar / sacar
+    m = re.search(
+        r"(quitar|quita|remover|remueve|eliminar|elimina|sacar|saca|borrar|borra)\s+(.*)",
+        text,
+    )
+    if m:
+        resto = (m.group(2) or "").strip()
+        qty = _parse_quantity(resto)
+        name = _clean_product_name(resto)
+        return VoiceIntent(raw=raw, action="remove", quantity=qty, product_name=name)
+
+    # 3) Agregar / sumar / poner
+    m = re.search(
+        r"(agrega|agregar|añade|añadir|suma|sumar|poner|pon)\s+(.*)",
+        text,
+    )
+    if m:
+        resto = (m.group(2) or "").strip()
+        qty = _parse_quantity(resto)
+        name = _clean_product_name(resto)
+        return VoiceIntent(raw=raw, action="add", quantity=qty, product_name=name)
+
+    # 4) Comprar / quiero / deseo / llevar
+    m = re.search(
+        r"(comprar|compra|quiero|deseo|llevar|llevo)\s+(.*)",
+        text,
+    )
+    if m:
+        resto = (m.group(2) or "").strip()
+        qty = _parse_quantity(resto)
+        name = _clean_product_name(resto)
+        return VoiceIntent(raw=raw, action="add", quantity=qty, product_name=name)
+
+    return VoiceIntent(raw=raw, action="unknown", quantity=1, product_name=text)
+
+
+def _generate_variants(name: str) -> set[str]:
+    name = name.strip().lower()
+    variants = {name}
+    if name.endswith("es") and len(name) > 2:
+        variants.add(name[:-2])
+    if name.endswith("s") and len(name) > 1:
+        variants.add(name[:-1])
+    return variants
+
+
+def find_best_product(name_fragment: str) -> Optional[Producto]:
+    if not name_fragment:
+        return None
+
+    name_fragment = name_fragment.lower().strip()
+    qs = Producto.objects.filter(activo=True)
+
+    # intento directo con variantes
+    variants = _generate_variants(name_fragment)
+    for v in variants:
+        p = qs.filter(nombre__icontains=v).first()
+        if p:
+            return p
+
+    # acortar frase desde el final
+    parts = [p for p in name_fragment.split(" ") if p]
+    while len(parts) > 1:
+        parts.pop()
+        shorter = " ".join(parts).strip()
+        if not shorter:
+            break
+        variants = _generate_variants(shorter)
+        for v in variants:
+            p = qs.filter(nombre__icontains=v).first()
+            if p:
+                return p
+
+    return None
+
+
+================================================================================
+Archivo: ia/urls.py
+================================================================================
+
+# analitica/urls.py
+
+from django.urls import path
+from .views import sales_predictions_view, voice_intent_view
+
+urlpatterns = [
+    path("predicciones/ventas/", sales_predictions_view, name="sales_predictions"),
+    path("voz/intencion/", voice_intent_view, name="voice_intent"),
+]
+
+
+================================================================================
+Archivo: analitica/views.py
+================================================================================
+
+# analitica/views.py
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import permissions, status
+
+# Predicciones de ventas
+from ia.train_predictions import generate_predictions
+
+# Interpretación de comandos de voz
+from ia.voice_intent import parse_voice_command, find_best_product
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def sales_predictions_view(request):
+    days = int(request.query_params.get("days", 30))
+    data = generate_predictions(days_to_predict=days)
+    return Response(data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def voice_intent_view(request):
+    """
+    Recibe texto de voz y devuelve la intención detectada y,
+    si es posible, el producto correspondiente.
+
+    body JSON:
+    {
+        "text": "agrega dos auriculares bt al carrito"
+    }
+
+    respuesta:
+    {
+        "raw": "...",
+        "action": "add",
+        "quantity": 2,
+        "product_name": "auriculares bt",
+        "product": {
+            "id": 5,
+            "nombre": "Auriculares BT",
+            "precio": "40.00",
+            "stock": 56
+        }
+    }
+    """
+    text = request.data.get("text", "") or ""
+    intent = parse_voice_command(text)
+
+    response_data = {
+        "raw": intent.raw,
+        "action": intent.action,
+        "quantity": intent.quantity,
+        "product_name": intent.product_name,
+        "product": None,
+    }
+
+    if intent.action in ("add", "remove") and intent.product_name:
+        product = find_best_product(intent.product_name)
+        if product:
+            response_data["product"] = {
+                "id": product.id,
+                "nombre": product.nombre,
+                "precio": str(product.precio),
+                "stock": product.stock,
+            }
+
+    return Response(response_data, status=status.HTTP_200_OK)
 
 
 ================================================================================
@@ -913,189 +1602,490 @@ Archivo: analitica/urls.py
 ================================================================================
 
 # analitica/urls.py
+
 from django.urls import path
-from .views import sales_predictions_view
+from .views import sales_predictions_view, voice_intent_view
 
 urlpatterns = [
     path("predicciones/ventas/", sales_predictions_view, name="sales_predictions"),
+    path("voz/intencion/", voice_intent_view, name="voice_intent"),
 ]
+
 
 ================================================================================
 Archivo: frontend/src/pages/reportes/Reportes.jsx
 ================================================================================
 
+// src/pages/Reportes.jsx
 import { useState, useEffect, useRef } from 'react';
 import api from '../../api/axios.js';
-import { Mic, Download, Eye, Loader2, CheckCircle } from 'lucide-react';
+import { Mic, StopCircle, Download, Eye, Loader2, Info } from 'lucide-react';
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const recognition = SpeechRecognition ? new SpeechRecognition() : null;
-if (recognition) {
-  // Configuración del reconocimiento de voz
-  recognition.continuous = false;
-  recognition.lang = 'es-ES';
-  recognition.interimResults = false;
-}
+const EXAMPLES = [
+  {
+    label: 'Ventas por cliente (mes actual)',
+    text: 'Reporte de ventas de este mes agrupado por cliente en pantalla',
+  },
+  {
+    label: 'Productos comprados por un cliente',
+    text: 'Productos comprados por el cliente Juan Pérez del 01/11/2025 al 30/11/2025 agrupados por producto en pantalla',
+  },
+  {
+    label: 'Top productos del mes',
+    text: 'Top 10 productos más vendidos de este mes por monto en pantalla',
+  },
+  {
+    label: 'Stock bajo (< 5 unidades)',
+    text: 'Productos con stock menor a 5 unidades ordenados por stock ascendente en pantalla',
+  },
+  {
+    label: 'Lista de precios por categoría',
+    text: 'Lista de precios de productos de la categoría Electrodomésticos en pantalla',
+  },
+  {
+    label: 'Productos sin movimiento',
+    text: 'Productos sin movimiento de ventas en los últimos 3 meses en pantalla',
+  },
+];
 
-export default function Reportes(){
+export default function Reportes() {
   const [prompt, setPrompt] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [supportsVoice, setSupportsVoice] = useState(true);
+
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingAction, setLoadingAction] = useState(null); // "preview" | "download" | null
+
   const [error, setError] = useState(null);
-  
   const [successMessage, setSuccessMessage] = useState(null);
-  // Estado para la previsualización
   const [previewData, setPreviewData] = useState(null);
 
-  const handleListen = () => {
-    if (!recognition) {
-      alert("El reconocimiento de voz no es compatible con este navegador.");
+  const recRef = useRef(null);
+
+  // -----------------------------
+  // Configuración de voz
+  // -----------------------------
+  useEffect(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setSupportsVoice(false);
       return;
     }
-    if (isListening) {
-      recognition.stop();
-      setIsListening(false);
-    } else {
-      recognition.start();
-      setIsListening(true);
-    }
-  };
 
-  useEffect(() => {
-    if (!recognition) return;
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      setPrompt(transcript);
-      recognition.stop();
-      setIsListening(false);
+    const recognition = new SR();
+    recognition.continuous = false;
+    recognition.lang = 'es-ES';
+    recognition.interimResults = false;
+
+    recognition.onresult = async (evt) => {
+      const t = evt.results?.[0]?.[0]?.transcript || '';
+      setPrompt(t);
+
+      // Auto-previsualizar en pantalla (quitamos "en pdf/excel")
+      try {
+        setIsLoading(true);
+        setLoadingAction('preview');
+        setError(null);
+        setPreviewData(null);
+        setSuccessMessage(null);
+
+        const clean = t.replace(/\b(en\s+)?(pdf|excel|xlsx)\b/gi, '').trim();
+        if (clean) {
+          const r = await api.post('reportes/prompt/', { prompt: clean });
+          setPreviewData(r.data);
+        }
+      } catch (err) {
+        setError(
+          err?.response?.data?.error ||
+            err?.response?.data?.detail ||
+            'No pude previsualizar el reporte.'
+        );
+      } finally {
+        setIsLoading(false);
+        setLoadingAction(null);
+        setIsListening(false);
+      }
     };
-    recognition.onerror = (event) => {
-      console.error("Error en reconocimiento de voz:", event.error);
-      setIsListening(false);
-    };
+
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+
+    recRef.current = recognition;
   }, []);
 
-  // Limpia los mensajes después de unos segundos
+  const handleListen = () => {
+    if (!recRef.current) {
+      alert('El reconocimiento de voz no es compatible con este navegador.');
+      return;
+    }
+    setPreviewData(null);
+    setError(null);
+    setSuccessMessage(null);
+    recRef.current.start();
+    setIsListening(true);
+  };
+
+  const stopListen = () => {
+    try {
+      recRef.current?.stop();
+    } catch (_) {}
+    setIsListening(false);
+  };
+
+  // Limpieza automática de mensajes
   useEffect(() => {
     if (error || successMessage) {
       const timer = setTimeout(() => {
         setError(null);
         setSuccessMessage(null);
-      }, 5000);
+      }, 4500);
       return () => clearTimeout(timer);
     }
   }, [error, successMessage]);
 
-  // Función para PREVISUALIZAR (siempre pide JSON)
+  // -----------------------------
+  // Acciones
+  // -----------------------------
   const handlePreview = async (e) => {
-    e.preventDefault();
+    e?.preventDefault?.();
     if (!prompt.trim()) return;
 
     setIsLoading(true);
+    setLoadingAction('preview');
     setError(null);
     setPreviewData(null);
     setSuccessMessage(null);
 
     try {
-      // Forzamos que no pida PDF/Excel para la preview
-      const previewPrompt = prompt.replace(/\b(en\s+)?(pdf|excel|xlsx)\b/gi, '').trim();
-      const response = await api.post('/reportes/prompt/', { prompt: previewPrompt });
+      // Para previsualizar siempre forzamos "en pantalla"
+      const previewPrompt = prompt
+        .replace(/\b(en\s+)?(pdf|excel|xlsx)\b/gi, '')
+        .trim();
+      const response = await api.post('reportes/prompt/', {
+        prompt: previewPrompt,
+      });
       setPreviewData(response.data);
     } catch (err) {
-      console.error("Error al generar reporte:", err);
-      const errorMsg = err.response?.data?.error || err.response?.data?.detail || "Ocurrió un error al previsualizar.";
-      setError(errorMsg);
+      setError(
+        err.response?.data?.error ||
+          err.response?.data?.detail ||
+          'Ocurrió un error al previsualizar.'
+      );
     } finally {
       setIsLoading(false);
+      setLoadingAction(null);
     }
   };
 
-  // Función para DESCARGAR (siempre pide un archivo binario 'blob')
   const handleDownload = async (e) => {
-    e.preventDefault();
+    e?.preventDefault?.();
     if (!prompt.trim()) return;
 
-    // Validar que el prompt pida un formato descargable
     if (!/pdf|excel|xlsx/i.test(prompt)) {
-      setError("Para descargar, por favor especifica 'en PDF' o 'en Excel' en tu solicitud.");
+      setError("Para descargar, especifica 'en PDF' o 'en Excel' en el prompt.");
       return;
     }
 
     setIsLoading(true);
+    setLoadingAction('download');
     setError(null);
     setPreviewData(null);
     setSuccessMessage(null);
 
     try {
-      const response = await api.post('/reportes/prompt/', { prompt }, { responseType: 'blob' });
+      const response = await api.post(
+        'reportes/prompt/',
+        { prompt },
+        { responseType: 'blob' }
+      );
+
+      const ext = /pdf/i.test(prompt) ? 'pdf' : 'xlsx';
+      const filename = `reporte-${new Date().toISOString().slice(0, 10)}.${ext}`;
+
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      const extension = /pdf/i.test(prompt) ? 'pdf' : 'xlsx';
-      const filename = `reporte-${new Date().toISOString().split('T')[0]}.${extension}`;
       link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
+
       setSuccessMessage(`¡Reporte "${filename}" descargado con éxito!`);
     } catch (err) {
-      console.error("Error al descargar reporte:", err);
-      setError(err.response?.data?.detail || "Ocurrió un error al descargar el archivo.");
+      setError(
+        err.response?.data?.detail ||
+          err.response?.data?.error ||
+          'Ocurrió un error al descargar el archivo.'
+      );
     } finally {
       setIsLoading(false);
+      setLoadingAction(null);
     }
-  }
+  };
+
+  // -----------------------------
+  // Render
+  // -----------------------------
+  const headers = previewData?.headers || [];
+  const rows = previewData?.rows || [];
+  const meta = previewData?.meta || {};
+  const hints = previewData?.hints || [];
+  const warnings = previewData?.warnings || [];
 
   return (
-    <div className="grid">
-      <div className="card">
-        <h2 style={{ margin: "0 0 16px" }}>Generador de Reportes</h2>
-        <form className="prompt-form">
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Ej: Reporte de ventas de este mes agrupado por cliente en PDF..."
-            disabled={isLoading}
-            rows="3"
-          />
-          <button type="button" onClick={handleListen} disabled={!recognition || isLoading} className={`btn-icon ${isListening ? 'listening' : ''}`}>
-            <Mic size={20} />
-          </button>
-        </form>
-        <div className="prompt-actions">
-          <button onClick={handlePreview} disabled={isLoading || !prompt.trim()} className="btn">
-            {isLoading ? <Loader2 className="spin" /> : <Eye />}
-            Previsualizar
-          </button>
-          <button onClick={handleDownload} disabled={isLoading || !prompt.trim()} className="btn primary">
-            {isLoading ? <Loader2 className="spin" /> : <Download />}
-            Descargar
-          </button>
-        </div>
-        {error && <div className="alert error" style={{marginTop: '16px'}}>{error}</div>}
-        {successMessage && <div className="alert success" style={{marginTop: '16px'}}>{successMessage}</div>}
+    <div className="max-w-6xl mx-auto px-4 py-6 lg:py-8">
+      {/* Encabezado */}
+      <div className="mb-5 lg:mb-8">
+        <h1 className="text-2xl lg:text-3xl font-semibold text-neutral-100 tracking-tight">
+          Generador de reportes
+        </h1>
+        <p className="mt-2 text-sm lg:text-base text-neutral-400 max-w-2xl">
+          Escribe o dicta lo que necesitas y el sistema generará el reporte
+          consultando varias tablas (ventas, clientes, productos, stock, etc.).
+        </p>
       </div>
 
-      {previewData && (
-        <div className="card">
-          <h3>Previsualización del Reporte</h3>
-          <div className="table-responsive">
-            <table className="table-nowrap">
-              <thead>
-                <tr>{previewData.headers.map(h => <th key={h}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {previewData.rows?.length > 0 ? (
-                  previewData.rows.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)
-                ) : (
-                  <tr><td colSpan={previewData.headers?.length || 1}>No se encontraron resultados para esta consulta.</td></tr>
-                )}
-              </tbody>
-            </table>
+      {/* Layout principal: prompt + preview */}
+      <div className="grid gap-5 lg:gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.2fr)]">
+        {/* Panel de entrada */}
+        <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col h-full">
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <h2 className="text-sm font-medium text-neutral-200 flex items-center gap-2">
+              <Eye size={16} className="text-cyan-400" />
+              Instrucción del reporte
+            </h2>
+            <span className="text-[11px] px-2 py-1 rounded-full bg-neutral-800/80 text-neutral-400">
+              Ej: “Top 10 productos más vendidos de este mes en PDF”
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="Describe el reporte que quieres generar..."
+                disabled={isLoading && loadingAction === 'download'}
+                rows={4}
+                className="flex-1 min-h-[120px] rounded-xl bg-neutral-950 border border-neutral-800 focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-neutral-200 text-sm p-3 outline-none placeholder:text-neutral-500 resize-none"
+              />
+
+              {/* Botón de voz */}
+              {supportsVoice && (
+                <button
+                  type="button"
+                  onClick={isListening ? stopListen : handleListen}
+                  disabled={isLoading}
+                  className={`flex-shrink-0 h-11 w-full sm:w-12 sm:h-[46px] rounded-xl border text-sm sm:text-base grid place-items-center transition
+                    ${
+                      isListening
+                        ? 'border-red-500/60 bg-red-600/20 text-red-200'
+                        : 'border-neutral-700 bg-neutral-950 hover:bg-neutral-900 text-neutral-200'
+                    }
+                    ${isLoading ? 'opacity-60 cursor-not-allowed' : ''}
+                  `}
+                >
+                  {isListening ? <StopCircle size={18} /> : <Mic size={18} />}
+                </button>
+              )}
+            </div>
+
+            {/* Chips de ejemplos */}
+            <div className="mt-2 flex flex-wrap gap-2">
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex.label}
+                  type="button"
+                  onClick={() => setPrompt(ex.text)}
+                  className="text-[11px] sm:text-xs px-2.5 py-1 rounded-full border border-neutral-700/80 text-neutral-300 bg-neutral-950/60 hover:bg-neutral-900/90 transition"
+                >
+                  {ex.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Botones de acción */}
+          <div className="mt-4 flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={handlePreview}
+              disabled={isLoading && loadingAction === 'download' || !prompt.trim()}
+              className="inline-flex justify-center items-center gap-2 px-4 py-2 rounded-xl border border-neutral-700 bg-neutral-950 hover:bg-neutral-900 text-neutral-100 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading && loadingAction === 'preview' ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <Eye size={18} />
+              )}
+              <span>Previsualizar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={isLoading && loadingAction === 'preview' || !prompt.trim()}
+              className="inline-flex justify-center items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 text-neutral-900 font-medium text-sm hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading && loadingAction === 'download' ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <Download size={18} />
+              )}
+              <span>Descargar</span>
+            </button>
+          </div>
+
+          {/* Mensajes de estado */}
+          {error && (
+            <div className="mt-4 text-xs sm:text-sm text-red-300 bg-red-600/10 border border-red-900/40 rounded-xl p-3">
+              {error}
+            </div>
+          )}
+          {successMessage && (
+            <div className="mt-4 text-xs sm:text-sm text-emerald-300 bg-emerald-600/10 border border-emerald-900/40 rounded-xl p-3">
+              {successMessage}
+            </div>
+          )}
+
+          {/* Tips rápidos */}
+          <div className="mt-4 text-[11px] sm:text-xs text-neutral-400 flex items-start gap-2">
+            <Info size={14} className="mt-0.5 flex-shrink-0 text-neutral-500" />
+            <div>
+              <div>
+                Para descargar, incluye al final <span className="font-semibold">'en PDF'</span> o{' '}
+                <span className="font-semibold">'en Excel'</span>.
+              </div>
+              <div>
+                Si no indicas rango de fechas, el sistema usa los últimos 30 días.
+              </div>
+            </div>
           </div>
         </div>
-      )}
+
+        {/* Panel de previsualización */}
+        <div className="bg-neutral-900/40 border border-neutral-800 rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col h-full">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-neutral-200">
+              Previsualización
+            </h3>
+            <span className="text-[11px] text-neutral-500">
+              Solo se muestra al usar “Previsualizar”
+            </span>
+          </div>
+
+          {/* Meta del reporte */}
+          {previewData ? (
+            <>
+              <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-neutral-400">
+                {meta?.intent && (
+                  <span className="px-2 py-1 rounded-full bg-neutral-950/80 border border-neutral-800">
+                    Intento: <span className="font-semibold">{meta.intent}</span>
+                  </span>
+                )}
+                {meta?.start_date && meta?.end_date && (
+                  <span className="px-2 py-1 rounded-full bg-neutral-950/80 border border-neutral-800">
+                    Rango: {meta.start_date} — {meta.end_date}
+                  </span>
+                )}
+                {meta?.dimensions && (
+                  <span className="px-2 py-1 rounded-full bg-neutral-950/80 border border-neutral-800">
+                    Grupo: {Array.isArray(meta.dimensions) ? meta.dimensions.join(', ') : meta.dimensions}
+                  </span>
+                )}
+              </div>
+
+              {(hints.length > 0 || warnings.length > 0) && (
+                <div className="mb-3 space-y-1 text-[11px] text-neutral-400">
+                  {hints.map((h, i) => (
+                    <div key={`hint-${i}`} className="flex gap-1">
+                      <span className="mt-[2px] text-cyan-400">•</span>
+                      <span>{h}</span>
+                    </div>
+                  ))}
+                  {warnings.map((w, i) => (
+                    <div key={`warn-${i}`} className="flex gap-1 text-amber-300">
+                      <span className="mt-[2px]">•</span>
+                      <span>{w}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Tabla */}
+              <div className="relative flex-1 min-h-[180px] border border-neutral-800/70 rounded-xl bg-neutral-950/80 overflow-hidden">
+                <div className="overflow-x-auto max-h-[420px]">
+                  <table className="min-w-full text-[11px] sm:text-xs">
+                    <thead className="bg-neutral-950 sticky top-0 z-10">
+                      <tr className="text-neutral-400">
+                        {headers.length > 0 ? (
+                          headers.map((h) => (
+                            <th
+                              key={h}
+                              className="text-left px-3 py-2 border-b border-neutral-800"
+                            >
+                              {h}
+                            </th>
+                          ))
+                        ) : (
+                          <th className="px-3 py-2 border-b border-neutral-800">
+                            Resultado
+                          </th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.length > 0 ? (
+                        rows.map((row, i) => (
+                          <tr
+                            key={i}
+                            className={i % 2 === 0 ? 'bg-neutral-900/40' : ''}
+                          >
+                            {row.map((cell, j) => {
+                              const header = headers[j] || '';
+                              const alignRight = /monto|total|precio|cantidad/i.test(
+                                header
+                              );
+                              return (
+                                <td
+                                  key={j}
+                                  className={`px-3 py-2 whitespace-nowrap ${
+                                    alignRight ? 'text-right' : ''
+                                  }`}
+                                >
+                                  {cell}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td
+                            className="px-3 py-6 text-neutral-400 text-center"
+                            colSpan={headers.length || 1}
+                          >
+                            No se encontraron resultados para este reporte.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-center text-neutral-500 text-xs sm:text-sm border border-dashed border-neutral-800 rounded-xl bg-neutral-950/40 px-4 py-8">
+              Escribe una instrucción y haz clic en{' '}
+              <span className="mx-1 font-semibold text-neutral-300">
+                “Previsualizar”
+              </span>{' '}
+              para ver el resultado aquí.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -4,7 +4,8 @@ import { useNavigate, useParams } from 'react-router-dom'
 import api from '../../api/axios'
 import { PATHS } from '../../api/paths'
 import ListaVentas from './ListaVentas'
-import { Plus, Minus, Trash2, ShoppingCart } from 'lucide-react'
+import Carrito from './Carrito'
+import { Plus } from 'lucide-react'
 
 // =========================
 // Helper: obtener user_id del JWT
@@ -51,8 +52,25 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
   // ref para hacer scroll al carrito (CTA móvil)
   const carritoRef = useRef(null)
 
+  // Helper para mapear VentaSerializer -> arreglo de items del frontend
+  const syncCarritoFromVenta = useCallback((venta) => {
+    if (!venta) {
+      setCarrito([])
+      return
+    }
+    const items = (venta.items || []).map(it => ({
+      itemId: it.id,
+      producto: it.producto,
+      nombre: it.producto_nombre,
+      cantidad: it.cantidad,
+      precio_unit: Number(it.precio_unit),
+    }))
+    setCarrito(items)
+  }, [])
+
+  // Carga de combos + venta en edición
   useEffect(() => {
-    (async () => {
+    ;(async () => {
       try {
         // Productos
         const p = await api.get(`${PATHS.productos}?ordering=nombre`)
@@ -68,7 +86,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         setClientes(lista)
 
         // 🔵 Si el usuario tiene perfil de Cliente
-        // buscamos cliente.usuario == currentUserId
         if (currentUserId) {
           const miCliente = lista.find(cli =>
             cli.usuario === currentUserId ||
@@ -106,15 +123,7 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
           const res = await api.get(`${PATHS.ventas.root}${ventaId}/`)
           const v = res.data
           setCliente(String(v.cliente))
-          setCarrito(
-            v.items.map(it => ({
-              producto: it.producto,
-              nombre: it.producto_nombre,
-              cantidad: it.cantidad,
-              // respetamos el precio de la venta
-              precio_unit: Number(it.precio_unit)
-            }))
-          )
+          syncCarritoFromVenta(v)
         } finally {
           setLoadingVenta(false)
         }
@@ -122,7 +131,29 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         setLoadingVenta(false)
       }
     })()
-  }, [isEditing, ventaId, currentUserId])
+  }, [isEditing, ventaId, currentUserId, syncCarritoFromVenta])
+
+  // Carga del carrito desde backend cuando se conoce el cliente (solo en nueva venta)
+  useEffect(() => {
+    if (isEditing) return
+    if (!cliente) return
+
+    ;(async () => {
+      try {
+        const res = await api.get(PATHS.ventas.carrito, {
+          params: { cliente },
+        })
+        // aseguramos que el cliente del carrito quede seteado
+        if (res.data?.cliente) {
+          setCliente(String(res.data.cliente))
+        }
+        syncCarritoFromVenta(res.data)
+      } catch (e) {
+        // si no hay carrito aún o 400, simplemente lo ignoramos
+        console.error('No se pudo cargar carrito inicial:', e)
+      }
+    })()
+  }, [cliente, isEditing, syncCarritoFromVenta])
 
   // Lista filtrada de productos (buscador + filtros + solo ofertas)
   const list = useMemo(() => {
@@ -151,79 +182,191 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
     return data
   }, [productos, buscar, filtroCategoria, filtroMarca, soloOfertas])
 
-  // Usa precio_final si existe, si no el normal
-  const add = useCallback((prod, cantidad = 1) => {
-    const precioUnit = prod.precio_final != null
-      ? Number(prod.precio_final)
-      : Number(prod.precio || 0)
+  // =============================
+  // Operaciones de carrito
+  // =============================
 
-    setCarrito(prev => {
-      const i = prev.findIndex(x => x.producto === prod.id)
-      if (i >= 0) {
-        const arr = [...prev]
-        arr[i] = { ...arr[i], cantidad: arr[i].cantidad + cantidad }
-        return arr
+  const add = useCallback(
+    async (prod, cantidad = 1) => {
+      if (!cliente) {
+        alert('Selecciona un cliente antes de agregar productos.')
+        return
       }
-      return [
-        ...prev,
-        {
+
+      // Edición de venta existente → solo en memoria, luego PUT
+      if (isEditing) {
+        const precioUnit = prod.precio_final != null
+          ? Number(prod.precio_final)
+          : Number(prod.precio || 0)
+
+        setCarrito(prev => {
+          const i = prev.findIndex(x => x.producto === prod.id)
+          if (i >= 0) {
+            const arr = [...prev]
+            arr[i] = { ...arr[i], cantidad: arr[i].cantidad + cantidad }
+            return arr
+          }
+          return [
+            ...prev,
+            {
+              itemId: undefined,
+              producto: prod.id,
+              nombre: prod.nombre,
+              modelo: prod.modelo,
+              precio_unit: precioUnit,
+              cantidad,
+            },
+          ]
+        })
+        setProductoActivo(null)
+        return
+      }
+
+      // Nueva venta → carrito en backend
+      try {
+        const res = await api.post(PATHS.ventas.carrito, {
+          cliente,
           producto: prod.id,
-          nombre: prod.nombre,
-          modelo: prod.modelo,
-          precio_unit: precioUnit,
-          cantidad
-        }
-      ]
-    })
-    setProductoActivo(null)
-  }, [])
+          cantidad,
+        })
+        syncCarritoFromVenta(res.data)
+      } catch (e) {
+        console.error('Error al agregar al carrito:', e.response?.data || e)
+        const data = e.response?.data || {}
+        const msg =
+          data.cantidad ||
+          data.producto ||
+          data.cliente ||
+          data.detail ||
+          'No se pudo agregar el producto al carrito.'
+        alert(msg)
+      } finally {
+        setProductoActivo(null)
+      }
+    },
+    [cliente, isEditing, syncCarritoFromVenta]
+  )
 
-  const setCant = (i, v) =>
+  const updateCantidadLocal = (i, nuevaCantidad) => {
     setCarrito(prev => {
       const a = [...prev]
-      a[i] = { ...a[i], cantidad: Math.max(1, Number(v) || 1) }
+      a[i] = { ...a[i], cantidad: Math.max(1, nuevaCantidad) }
       return a
     })
+  }
 
-  const inc = i =>
-    setCarrito(prev => {
-      const a = [...prev]
-      a[i] = { ...a[i], cantidad: a[i].cantidad + 1 }
-      return a
-    })
+  const updateCantidadBackend = async (itemId, nuevaCantidad) => {
+    try {
+      const res = await api.patch(PATHS.ventas.carritoItem(itemId), {
+        cantidad: nuevaCantidad,
+      })
+      syncCarritoFromVenta(res.data)
+    } catch (e) {
+      console.error(e)
+      alert('No se pudo actualizar la cantidad.')
+    }
+  }
 
-  const dec = i =>
-    setCarrito(prev => {
-      const a = [...prev]
-      a[i] = { ...a[i], cantidad: Math.max(1, a[i].cantidad - 1) }
-      return a
-    })
+  const setCant = (i, v) => {
+    const n = Math.max(1, Number(v) || 1)
+    const item = carrito[i]
+    if (!item) return
 
-  const quitar = i => setCarrito(prev => prev.filter((_, k) => k !== i))
-  const total = carrito.reduce((s, i) => s + i.cantidad * i.precio_unit, 0)
+    if (isEditing || !item.itemId) {
+      updateCantidadLocal(i, n)
+    } else {
+      updateCantidadBackend(item.itemId, n)
+    }
+  }
+
+  const inc = i => {
+    const item = carrito[i]
+    if (!item) return
+    const nueva = item.cantidad + 1
+    if (isEditing || !item.itemId) {
+      updateCantidadLocal(i, nueva)
+    } else {
+      updateCantidadBackend(item.itemId, nueva)
+    }
+  }
+
+  const dec = i => {
+    const item = carrito[i]
+    if (!item) return
+    const nueva = Math.max(1, item.cantidad - 1)
+    if (isEditing || !item.itemId) {
+      updateCantidadLocal(i, nueva)
+    } else {
+      updateCantidadBackend(item.itemId, nueva)
+    }
+  }
+
+  const quitar = async i => {
+    const item = carrito[i]
+    if (!item) return
+
+    // edición → solo local
+    if (isEditing || !item.itemId) {
+      setCarrito(prev => prev.filter((_, k) => k !== i))
+      return
+    }
+
+    // nueva venta → backend
+    try {
+      const res = await api.delete(PATHS.ventas.carritoItem(item.itemId))
+      // si backend devuelve carrito actualizado (como lo hicimos)
+      if (res.data) {
+        syncCarritoFromVenta(res.data)
+      } else {
+        // por si acaso, recargamos
+        const r2 = await api.get(PATHS.ventas.carrito, { params: { cliente } })
+        syncCarritoFromVenta(r2.data)
+      }
+    } catch (e) {
+      console.error(e)
+      alert('No se pudo quitar el producto del carrito.')
+    }
+  }
+
+  const total = useMemo(
+    () => carrito.reduce((s, i) => s + i.cantidad * i.precio_unit, 0),
+    [carrito]
+  )
 
   const guardarVenta = async () => {
     if (!cliente) return alert('Selecciona un cliente')
     if (!carrito.length) return alert('El carrito está vacío')
 
-    const payload = {
-      cliente,
-      items: carrito.map(it => ({
-        producto: it.producto,
-        cantidad: it.cantidad,
-        precio_unit: it.precio_unit
-      }))
+    // Edición → sigue usando PUT /ventas/{id}/
+    if (isEditing) {
+      const payload = {
+        cliente,
+        items: carrito.map(it => ({
+          producto: it.producto,
+          cantidad: it.cantidad,
+          precio_unit: it.precio_unit,
+        })),
+      }
+
+      try {
+        const res = await api.put(`${PATHS.ventas.root}${ventaId}/`, payload)
+        alert('Venta actualizada con éxito.')
+        onVentaGuardada(res.data.id)
+      } catch (error) {
+        console.error('Error al guardar la venta:', error.response?.data || error)
+        alert(
+          `Hubo un error al guardar la venta: ${
+            error.response?.data?.detail || ''
+          }`
+        )
+      }
+      return
     }
 
+    // Nueva venta → confirmar carrito en backend
     try {
-      let res
-      if (isEditing) {
-        res = await api.put(`${PATHS.ventas.root}${ventaId}/`, payload)
-        alert('Venta actualizada con éxito.')
-      } else {
-        res = await api.post(PATHS.ventas.root, payload)
-        alert('Venta creada con éxito. Redirigiendo al detalle de pago...')
-      }
+      const res = await api.post(PATHS.ventas.carritoConfirmar, { cliente })
+      alert('Venta creada con éxito. Redirigiendo al detalle de pago...')
       onVentaGuardada(res.data.id)
     } catch (error) {
       console.error('Error al guardar la venta:', error.response?.data || error)
@@ -435,57 +578,20 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         </div>
 
         {/* Columna Derecha: Carrito */}
-        <div className="carrito-sticky" ref={carritoRef}>
-          <div className="card carrito-card">
-            <h3>
-              Carrito{' '}
-              {carrito.length ? (
-                <span style={{ opacity: 0.7 }}>({carrito.length})</span>
-              ) : null}
-            </h3>
-            <CarritoTable
-              carrito={carrito}
-              setCant={setCant}
-              inc={inc}
-              dec={dec}
-              quitar={quitar}
-              total={total}
-            />
-            <div className="btn-row" style={{ marginTop: 12 }}>
-              <button
-                className="primary"
-                onClick={guardarVenta}
-                disabled={!cliente || !carrito.length}
-              >
-                {isEditing ? 'Actualizar Venta' : 'Crear Venta'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <Carrito
+          carrito={carrito}
+          total={total}
+          cliente={cliente}
+          isEditing={isEditing}
+          carritoRef={carritoRef}
+          scrollToCarrito={scrollToCarrito}
+          guardarVenta={guardarVenta}
+          setCant={setCant}
+          inc={inc}
+          dec={dec}
+          quitar={quitar}
+        />
       </div>
-
-      {/* CTA móvil fijo */}
-      {carrito.length > 0 && (
-        <div className="venta-cta">
-          <div className="cta-left">
-            <ShoppingCart size={18} />
-            <span>{carrito.length} ítem(s)</span>
-            <b style={{ marginLeft: 8 }}>Total: Bs. {total.toFixed(2)}</b>
-          </div>
-          <div className="cta-actions">
-            <button onClick={scrollToCarrito} className="action-btn">
-              Ver carrito
-            </button>
-            <button
-              className="primary"
-              onClick={guardarVenta}
-              disabled={!cliente}
-            >
-              {isEditing ? 'Actualizar' : 'Crear venta'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Modal de Detalle de Producto */}
       {productoActivo && (
@@ -550,92 +656,6 @@ function FormularioNuevaVenta({ onVentaGuardada, isEditing }) {
         @media (min-width:1025px){ .venta-cta{ display:none; } }
       `}</style>
     </>
-  )
-}
-
-function CarritoTable({ carrito, setCant, inc, dec, quitar, total }) {
-  if (carrito.length === 0) {
-    return (
-      <p
-        style={{
-          color: 'var(--muted)',
-          textAlign: 'center',
-          padding: '20px 0'
-        }}
-      >
-        El carrito está vacío.
-      </p>
-    )
-  }
-  return (
-    <div className="table-responsive">
-      <table className="table-nowrap">
-        <thead>
-          <tr>
-            <th>Producto</th>
-            <th className="th-nowrap">Cantidad</th>
-            <th className="th-nowrap">PU</th>
-            <th className="th-nowrap">Subtotal</th>
-            <th className="col-actions" />
-          </tr>
-        </thead>
-        <tbody>
-          {carrito.map((it, i) => (
-            <tr key={i}>
-              <td className="col-text">{it.nombre}</td>
-              <td className="col-cant">
-                <div className="qty-stepper">
-                  <button
-                    className="btn-icon"
-                    onClick={() => dec(i)}
-                    aria-label="Disminuir"
-                  >
-                    <Minus size={16} />
-                  </button>
-                  <input
-                    className="input-cantidad"
-                    type="number"
-                    min="1"
-                    value={it.cantidad}
-                    onChange={e => setCant(i, e.target.value)}
-                  />
-                  <button
-                    className="btn-icon"
-                    onClick={() => inc(i)}
-                    aria-label="Aumentar"
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-              </td>
-              <td className="col-num">{it.precio_unit.toFixed(2)}</td>
-              <td className="col-num">
-                {(it.precio_unit * it.cantidad).toFixed(2)}
-              </td>
-              <td className="col-actions">
-                <button
-                  className="btn-icon"
-                  onClick={() => quitar(i)}
-                  aria-label="Quitar"
-                  title="Quitar"
-                >
-                  <Trash2 size={18} />
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr>
-            <th colSpan={3} style={{ textAlign: 'right' }}>
-              Total:
-            </th>
-            <th>Bs. {total.toFixed(2)}</th>
-            <th />
-          </tr>
-        </tfoot>
-      </table>
-    </div>
   )
 }
 

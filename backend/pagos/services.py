@@ -1,86 +1,184 @@
-import uuid
-import stripe
-from django.db import transaction, IntegrityError
+# pagos/services.py
+from __future__ import annotations
+
+from decimal import Decimal
+
 from django.conf import settings
+from django.db import transaction
+
+from ventas.models import Venta
 from .models import Pago
-from .exceptions import StripeConfigError, StripePaymentError
-from ventas.services import marcar_pagada, marcar_reembolsada
 
-if not settings.STRIPE_SECRET_KEY:
-    raise StripeConfigError("La clave secreta de Stripe (STRIPE_SECRET_KEY) no está configurada.")
+# Stripe opcional (modo fake si no hay)
+try:
+    import stripe
+except ImportError:
+    stripe = None
 
-# Configurar la clave de API de Stripe al iniciar el módulo
-stripe.api_key = settings.STRIPE_SECRET_KEY
+STRIPE_SECRET_KEY = getattr(settings, "STRIPE_SECRET_KEY", None)
+STRIPE_CURRENCY = getattr(settings, "STRIPE_CURRENCY", "bob").lower()
 
-def _ensure_idempotency(idempotency_key: str) -> str:
-    # Si no llega, generamos uno (esto evita doble confirmaciones si el cliente reintenta)
-    return idempotency_key or f"key_{uuid.uuid4().hex}"
+if stripe and STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
-@transaction.atomic
-def crear_intento_pago(venta, usuario, idempotency_key: str | None = None) -> Pago:
-    key = _ensure_idempotency(idempotency_key)
-    # idempotency a nivel de Pago
-    try:
-        pago, created = Pago.objects.get_or_create(
-            venta=venta,
-            defaults={
-                "monto": venta.total,
-                "usuario": usuario,
-                "estado": "creado",
-                "moneda": "BOB",
-                "metodo": "stripe",
-                "idempotency_key": key,
-            },
-        )
-    except IntegrityError:
-        # idempotency_key ya usado en otra operación: recuperamos
-        pago = Pago.objects.get(idempotency_key=key)
+
+def _amount_to_cents(monto: Decimal) -> int:
+    return int(Decimal(monto) * 100)
+
+
+# ================
+# 1) Intento pago
+# ================
+
+def crear_intento_pago(
+    venta: Venta,
+    user,
+    idempotency_key: str | None = None,
+) -> Pago:
+    """
+    Crea (o recupera) el Pago asociado a una venta.
+    """
+    if idempotency_key:
+        pago = Pago.objects.filter(idempotency_key=idempotency_key).first()
+        if pago:
+            return pago
+
+    pago, created = Pago.objects.get_or_create(
+        venta=venta,
+        defaults={
+            "monto": venta.total,
+            "moneda": STRIPE_CURRENCY.upper(),
+            "usuario": user if getattr(user, "is_authenticated", False) else None,
+            "idempotency_key": idempotency_key or "",
+            "estado": "creado",
+        },
+    )
+
+    if not created:
+        pago.monto = venta.total
+        pago.moneda = STRIPE_CURRENCY.upper()
+        if user and getattr(user, "is_authenticated", False):
+            pago.usuario = user
+        if idempotency_key:
+            pago.idempotency_key = idempotency_key
+        if not pago.estado:
+            pago.estado = "creado"
+        pago.save(update_fields=["monto", "moneda", "usuario", "idempotency_key", "estado"])
+
     return pago
 
-def crear_stripe_payment_intent(pago: Pago):
+
+# ==========================
+# 2) PaymentIntent en Stripe
+# ==========================
+
+def crear_stripe_payment_intent(pago: Pago) -> str:
     """
-    Crea o recupera un PaymentIntent de Stripe.
-    Devuelve el client_secret para que el frontend pueda usarlo.
+    Crea (o reutiliza) un PaymentIntent en Stripe y devuelve client_secret.
+    Si Stripe no está configurado, genera uno fake.
     """
-    try:
-        # Siempre creamos un nuevo PaymentIntent para asegurar un client_secret fresco.
-        # Esto evita problemas si el usuario cancela y reintenta el pago.
-        intent = stripe.PaymentIntent.create(
-            amount=int(pago.monto * 100), # Stripe usa centavos
-            currency=pago.moneda.lower(), # ej: 'bob'
-            description=f"Pago para Venta {pago.venta.folio}",
-            metadata={'venta_id': pago.venta.id, 'pago_id': pago.id}
-        )
-        # Guardamos la referencia del nuevo PaymentIntent en nuestro modelo de Pago
-        pago.referencia = intent.id
-        pago.save(update_fields=["referencia"])
-        
-        return intent.client_secret
-    except stripe.error.StripeError as e:
-        raise StripePaymentError(f"Error al crear el PaymentIntent en Stripe: {str(e)}")
+    if not stripe or not STRIPE_SECRET_KEY:
+        if not pago.referencia:
+            pago.referencia = f"fake_pi_{pago.id}"
+            pago.save(update_fields=["referencia"])
+        return f"fake_client_secret_{pago.id}"
+
+    if pago.referencia:
+        try:
+            pi = stripe.PaymentIntent.retrieve(pago.referencia)
+            return pi.client_secret
+        except Exception:
+            pass
+
+    amount_cents = _amount_to_cents(pago.monto)
+    params = {
+        "amount": amount_cents,
+        "currency": STRIPE_CURRENCY,
+        "metadata": {
+            "venta_id": pago.venta_id,
+            "pago_id": pago.id,
+        },
+    }
+
+    idempotency = pago.idempotency_key or f"pago-{pago.id}"
+    pi = stripe.PaymentIntent.create(**params, idempotency_key=idempotency)
+
+    pago.referencia = pi.id
+    pago.save(update_fields=["referencia"])
+
+    return pi.client_secret
+
+
+# ==========================
+# 3) Confirmar pago
+# ==========================
 
 @transaction.atomic
-def confirmar_pago_stripe(venta, usuario, idempotency_key: str | None = None) -> Pago:
+def confirmar_pago_stripe(
+    venta: Venta,
+    user,
+    idempotency_key: str | None = None,
+) -> Pago:
     """
-    DEPRECATED: Esta función simula un pago. El flujo real se inicia desde
-    CrearIntentoPagoView y se confirma en el frontend. La confirmación final
-    en el backend se hace llamando a `marcar_pagada` en la venta.
+    Marca el pago como aprobado y la venta como pagada.
+    Opcionalmente valida el PaymentIntent en Stripe.
     """
-    # Mantenemos la simulación por si se usa en otro lado, pero el flujo nuevo no la usará.
-    pago = crear_intento_pago(venta, usuario, idempotency_key)
-    if pago.estado != "aprobado":
-        pago.referencia = f"pi_simulado_{uuid.uuid4().hex[:12]}"
-        pago.estado = "aprobado"
-        pago.save(update_fields=["referencia", "estado"])
-        marcar_pagada(venta, usuario)
+    pago = crear_intento_pago(venta, user, idempotency_key)
+
+    if pago.estado == "aprobado":
+        return pago
+
+    if stripe and STRIPE_SECRET_KEY and pago.referencia:
+        try:
+            pi = stripe.PaymentIntent.retrieve(pago.referencia)
+            if pi.status not in ("succeeded", "requires_capture"):
+                raise ValueError(f"PaymentIntent aún no está aprobado (status={pi.status})")
+        except Exception:
+            raise ValueError("No se pudo validar el pago en Stripe.")
+
+    pago.estado = "aprobado"
+    pago.usuario = user if getattr(user, "is_authenticated", False) else None
+    pago.save(update_fields=["estado", "usuario"])
+
+    venta.estado = "pagada"
+    venta.save(update_fields=["estado"])
+
     return pago
 
+
+# ==========================
+# 4) Reembolso total
+# ==========================
+
 @transaction.atomic
-def reembolsar_pago_total(venta, usuario) -> Pago:
-    pago = venta.pago
+def reembolsar_pago_total(venta: Venta, user) -> Pago:
+    """
+    Reembolso total de la venta (si el pago está aprobado).
+    """
+    try:
+        pago = Pago.objects.select_for_update().get(venta=venta)
+    except Pago.DoesNotExist:
+        raise ValueError("No existe un pago asociado a esta venta.")
+
     if pago.estado != "aprobado":
         raise ValueError("Solo se puede reembolsar un pago aprobado.")
+
+    if stripe and STRIPE_SECRET_KEY and pago.referencia:
+        try:
+            stripe.Refund.create(
+                payment_intent=pago.referencia,
+                metadata={"venta_id": venta.id, "pago_id": pago.id},
+            )
+        except Exception as e:
+            raise ValueError(f"No se pudo procesar el reembolso en Stripe: {e}")
+
     pago.estado = "reembolsado"
-    pago.save(update_fields=["estado"])
-    marcar_reembolsada(venta, usuario)
+    pago.usuario = user if getattr(user, "is_authenticated", False) else None
+    pago.save(update_fields=["estado", "usuario"])
+
+    venta.estado = "reembolsada"
+    venta.save(update_fields=["estado"])
+
     return pago
+
+

@@ -1,7 +1,8 @@
 # reportes/parser.py
-import os, re
-from datetime import datetime
-from typing import Dict, Any
+import os
+import re
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
 from django.conf import settings
 
 try:
@@ -27,7 +28,10 @@ def _ultimo_dia_mes(mes: int, year: int) -> int:
     return 30
 
 def _norm_fecha(s: str) -> str:
-    # soporta DD/MM/YYYY → YYYY-MM-DD
+    """
+    Normaliza "DD/MM/YYYY" a "YYYY-MM-DD".
+    Si ya está en formato ISO, lo deja igual.
+    """
     s = s.strip()
     if "/" in s and len(s.split("/")) == 3:
         d, m, y = s.split("/")
@@ -63,11 +67,12 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
     """
     Devuelve un dict con:
      - intent: ventas | stock | stock_bajo | precios | top_productos | sin_movimiento | agregar_carrito
-     - group_by (legacy): 'producto' por defecto (lo usan vistas antiguas)
+     - group_by: 'producto' | 'cliente' | 'categoria'
      - start_date, end_date (YYYY-MM-DD o None)
      - format: pantalla | pdf | excel
      - limit, threshold
-     - categoria, marca, contiene
+     - categoria, marca, contiene, cliente
+     - order_by, order_dir (para top/menos vendidos)
     """
     p = (prompt or "").lower().strip()
 
@@ -82,15 +87,19 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
         "categoria": None,
         "marca": None,
         "contiene": None,
-        "order_by": None,     # opcional (legacy)
-        "order_dir": None,    # opcional (legacy)
+        "cliente": None,
+        "order_by": None,
+        "order_dir": None,
     }
 
     # ---- 0) INTENCIÓN ESPECIAL: agregar al carrito ----
     # ejemplos: "agrega 2 licuadoras al carrito", "quiero 3 mouse gamer a la compra"
     if re.search(r"\b(agrega|añade|quiero|pon|mete)\b", p) and re.search(r"\b(carrito|compra|pedido)\b", p):
         out["intent"] = "agregar_carrito"
-        m_prod = re.search(r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)", p)
+        m_prod = re.search(
+            r"(?:agrega|añade|quiero|pon|mete)\s+(?:(\d+)\s+)?(.+?)\s+(?:al|a la)\s+(?:carrito|compra|pedido)",
+            p
+        )
         if m_prod:
             out["limit"] = int(m_prod.group(1) or 1)         # cantidad
             out["contiene"] = m_prod.group(2).strip()        # nombre del producto
@@ -134,11 +143,12 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
         out["order_by"] = "unidades"
         out["order_dir"] = "asc"
 
-
-
     # ---- 3) Fechas ----
     # formato explícito "del DD/MM/YYYY al DD/MM/YYYY" (o YYYY-MM-DD)
-    r = re.search(r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})", p)
+    r = re.search(
+        r"del\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})\s+al\s+(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})",
+        p
+    )
     if r:
         out["start_date"] = _norm_fecha(r.group(1))
         out["end_date"] = _norm_fecha(r.group(2))
@@ -161,9 +171,27 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
                     out["start_date"] = f"{year}-{mes:02d}-01"
                     out["end_date"] = f"{year}-{mes:02d}-{_ultimo_dia_mes(mes, year):02d}"
 
+        # "este mes"
+        if "este mes" in p and not out["start_date"]:
+            today = datetime.now().date()
+            out["start_date"] = today.replace(day=1).strftime("%Y-%m-%d")
+            out["end_date"] = today.strftime("%Y-%m-%d")
+
+        # "hoy"
+        if "hoy" in p and not out["start_date"]:
+            today = datetime.now().date().strftime("%Y-%m-%d")
+            out["start_date"] = today
+            out["end_date"] = today
+
+        # "ayer"
+        if "ayer" in p and not out["start_date"]:
+            d = datetime.now().date() - timedelta(days=1)
+            out["start_date"] = d.strftime("%Y-%m-%d")
+            out["end_date"] = d.strftime("%Y-%m-%d")
+
         # "último mes", "mes pasado" (dejamos que el builder use fallback 30 días si no se setea)
         if ("último mes" in p or "ultimo mes" in p or "mes pasado" in p) and not out["start_date"]:
-            # sin setear: el query_builder aplica fallback (últimos 30 días)
+            # sin setear: el service / builder aplica fallback (últimos 30 días)
             pass
 
     # ---- 4) Formato ----
@@ -186,9 +214,11 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
     # ---- 6) Threshold (para stock bajo) ----
     mth = re.search(r"(?:menor(?:\s*a)?|<)\s*(\d{1,6})", p)
     if mth:
-        out["threshold"] = int(mth.group(2) if mth.lastindex and mth.group(2) else mth.group(1))
+        out["threshold"] = int(
+            mth.group(2) if mth.lastindex and mth.group(2) else mth.group(1)
+        )
 
-    # ---- 7) Filtros simples ----
+    # ---- 7) Filtros simples (categoría, marca, nombre de producto) ----
     mc = re.search(r"categor[ií]a\s+([a-z0-9áéíóúñ \-_/]+)", p)
     if mc:
         out["categoria"] = mc.group(1).strip()
@@ -201,7 +231,20 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
     if mn:
         out["contiene"] = mn.group(1).strip()
 
-    # ---- 8) Orden (legacy: por si lo necesitas desde services)
+    # ---- 8) Filtro por cliente (nombre / doc) ----
+    # ejemplos:
+    #   "del cliente juan perez"
+    #   "para el cliente carlos"
+    #   "ventas del cliente maria en este mes"
+    mcli = re.search(r"(?:del|de|para(?:\s+el)?)\s+cliente\s+([a-z0-9áéíóúñ ]{2,})", p)
+    if mcli:
+        raw = mcli.group(1).strip()
+        # cortamos en palabras típicas que marcan el fin del nombre
+        raw = re.split(r"\s+(?:en|del|de|desde|hasta|al|por|y|con|que|mes|año|anio)\b", raw)[0].strip()
+        if raw:
+            out["cliente"] = raw
+
+    # ---- 9) Orden (legacy: por si lo necesitas desde services) ----
     if re.search(r"(menor a mayor|ascendente|asc\b)", p):
         out["order_dir"] = "asc"
     elif re.search(r"(mayor a menor|descendente|desc\b)", p):
@@ -209,5 +252,15 @@ def parse_prompt(prompt: str) -> Dict[str, Any]:
 
     if re.search(r"ordenad[oa]s?\s+por\s+stock", p):
         out["order_by"] = "stock"
+
+    # ---- 10) Agrupación (group_by) ----
+    # "por cliente", "por categoría", "por producto"
+    if re.search(r"por\s+cliente", p):
+        out["group_by"] = "cliente"
+    elif re.search(r"por\s+categori", p):
+        out["group_by"] = "categoria"
+    elif re.search(r"por\s+producto", p):
+        out["group_by"] = "producto"
+    # (default ya es "producto")
 
     return out

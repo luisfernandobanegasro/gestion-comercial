@@ -5,6 +5,12 @@ import os
 # Si añades o cambias archivos, actualiza esta lista.
 ARCHIVOS_RELEVANTES = [
     # Backend - Lógica de Reportes
+    "reportes/models.py",
+    "reportes/serializers.py",
+    "reportes/admin.py",
+    "reportes/management/commands/export_prompts.py",
+    "reportes/management/commands/train_models.py",
+    "reportes/logger.py"
     "reportes/views.py",
     "reportes/parser.py",
     "reportes/runner.py",
@@ -15,10 +21,17 @@ ARCHIVOS_RELEVANTES = [
     "reportes/intent_parser.py"
     "reportes/queries_extra.py"
     "reportes/query_builder.py"
+    "reportes/renderers.py"
+
 
     # Backend - Lógica de IA (Intenciones y Predicciones)
     "ia/train_intents.py",
     "ia/train_predictions.py",
+    "ia/dataset.py",
+    "ia/models.py",
+    "ia/views.py",
+    "ia/voice_intent.py",
+    "ia/urls.py",
 
     # Backend - Endpoints de Analítica
     "analitica/views.py",

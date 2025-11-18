@@ -1,9 +1,11 @@
 # ventas/views.py
+from django.db import transaction
+from django.http import HttpResponse
+
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
-from django.http import HttpResponse
-from django.db import transaction
 
 from .models import Venta, ItemVenta
 from .serializers import VentaSerializer
@@ -25,6 +27,51 @@ class VentaViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, RequierePermisos]
     # required_perms se define por acción para mayor granularidad
 
+    # ======================
+    # Helpers internos
+    # ======================
+    def _resolver_cliente(self, request):
+        """
+        Devuelve el Cliente a partir de:
+        - query param 'cliente' o body 'cliente'
+        - o el cliente vinculado al usuario autenticado.
+        """
+        u = request.user
+        cliente_id = request.data.get("cliente") or request.query_params.get("cliente")
+
+        if cliente_id:
+            cliente = Cliente.objects.filter(pk=cliente_id).first()
+            if not cliente:
+                raise ValidationError({"cliente": "Cliente no encontrado."})
+            return cliente
+
+        cliente = Cliente.objects.filter(usuario=u).first()
+        if not cliente:
+            raise ValidationError(
+                {
+                    "cliente": (
+                        "No se pudo determinar el cliente. "
+                        "Envíe el ID de cliente o vincule el usuario a un cliente."
+                    )
+                }
+            )
+        return cliente
+
+    def _get_or_create_carrito(self, usuario, cliente):
+        """
+        Obtiene o crea la Venta en estado 'pendiente' que actuará como carrito
+        para ese usuario + cliente.
+        """
+        venta, _ = Venta.objects.get_or_create(
+            cliente=cliente,
+            usuario=usuario,
+            estado="pendiente",
+        )
+        return venta
+
+    # ======================
+    # Queryset / permisos
+    # ======================
     def get_queryset(self):
         qs = super().get_queryset()
         u = self.request.user
@@ -37,15 +84,21 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         """Asigna permisos específicos para cada acción."""
-        if self.action in ['list', 'retrieve']:
+        if self.action in ["list", "retrieve"]:
             self.required_perms = ["ventas.ver"]
-        elif self.action in ['create', 'crear_desde_carrito']:
+        elif self.action in [
+            "create",
+            "crear_desde_carrito",
+            "carrito",
+            "carrito_item",
+            "confirmar_carrito",
+        ]:
             self.required_perms = ["ventas.crear"]
-        elif self.action in ['update', 'partial_update']:
+        elif self.action in ["update", "partial_update"]:
             self.required_perms = ["ventas.editar"]
-        elif self.action == 'anular':
+        elif self.action == "anular":
             self.required_perms = ["ventas.anular"]
-        elif self.action in ['confirmar_pago', 'comprobante']:
+        elif self.action in ["confirmar_pago", "comprobante"]:
             # Reutilizamos el permiso de crear pagos
             self.required_perms = ["pagos.crear"]
         else:
@@ -56,6 +109,173 @@ class VentaViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(usuario=self.request.user)
 
+    # ======================
+    # Carrito WEB (Venta pendiente)
+    # ======================
+    @action(detail=False, methods=["get", "post"], url_path="carrito")
+    def carrito(self, request):
+        """
+        GET  -> devuelve la venta pendiente (carrito) del cliente/usuario.
+                Si no existe, la crea vacía.
+        POST -> agrega/incrementa un producto en el carrito.
+
+        Body para POST:
+        {
+          "cliente": 1,          # opcional si el usuario ya está vinculado
+          "producto": 5,
+          "cantidad": 2
+        }
+        """
+        usuario = request.user
+        cliente = self._resolver_cliente(request)
+
+        if request.method == "GET":
+            venta = (
+                Venta.objects.filter(
+                    cliente=cliente,
+                    usuario=usuario,
+                    estado="pendiente",
+                )
+                .prefetch_related("items__producto")
+                .first()
+            )
+            if not venta:
+                venta = self._get_or_create_carrito(usuario, cliente)
+
+            ser = VentaSerializer(venta, context={"request": request})
+            return Response(ser.data)
+
+        # POST -> agregar producto
+        prod_id = request.data.get("producto")
+        cantidad = int(request.data.get("cantidad") or 0)
+
+        if not prod_id or cantidad <= 0:
+            raise ValidationError(
+                {"cantidad": "Debe enviar 'producto' y 'cantidad' > 0."}
+            )
+
+        # ⚠️ IMPORTANTE: ya no filtramos por activo=True aquí
+        producto = Producto.objects.filter(pk=prod_id).first()
+        if not producto:
+            raise ValidationError({"producto": "Producto no encontrado."})
+        if not producto.activo:
+            raise ValidationError({"producto": "El producto está inactivo."})
+
+        with transaction.atomic():
+            venta = self._get_or_create_carrito(usuario, cliente)
+
+            item = ItemVenta.objects.filter(venta=venta, producto=producto).first()
+            cantidad_actual = item.cantidad if item else 0
+            nueva_cantidad = cantidad_actual + cantidad
+
+            # validarStock
+            if nueva_cantidad > producto.stock:
+                raise ValidationError({"cantidad": "No hay stock suficiente."})
+
+            precio_unit = producto.precio_final
+
+            if item:
+                item.cantidad = nueva_cantidad
+                item.precio_unit = precio_unit
+                item.save()
+            else:
+                ItemVenta.objects.create(
+                    venta=venta,
+                    producto=producto,
+                    cantidad=cantidad,
+                    precio_unit=precio_unit,
+                )
+
+            venta.recalc_totales()
+
+        ser = VentaSerializer(venta, context={"request": request})
+        return Response(ser.data, status=status.HTTP_200_OK)
+
+    @action(
+        detail=False,
+        methods=["patch", "delete"],
+        url_path=r"carrito/items/(?P<item_id>[^/.]+)",
+    )
+    def carrito_item(self, request, item_id=None):
+        """
+        PATCH  -> cambia cantidad de un ítem del carrito.
+                  Body: { "cantidad": 3 }
+        DELETE -> elimina un ítem del carrito.
+        """
+        usuario = request.user
+
+        try:
+            item = (
+                ItemVenta.objects.select_related("venta", "producto").get(
+                    pk=item_id,
+                    venta__usuario=usuario,
+                    venta__estado="pendiente",
+                )
+            )
+        except ItemVenta.DoesNotExist:
+            return Response(
+                {"detail": "Ítem no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        venta = item.venta
+
+        with transaction.atomic():
+            if request.method == "DELETE":
+                item.delete()
+            else:  # PATCH
+                cantidad = int(request.data.get("cantidad") or 0)
+                if cantidad <= 0:
+                    item.delete()
+                else:
+                    if cantidad > item.producto.stock:
+                        raise ValidationError({"cantidad": "No hay stock suficiente."})
+                    item.cantidad = cantidad
+                    item.save()
+
+            venta.recalc_totales()
+
+        ser = VentaSerializer(venta, context={"request": request})
+        return Response(ser.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="carrito/confirmar")
+    def confirmar_carrito(self, request):
+        """
+        Confirma el carrito (venta pendiente) y devuelve la Venta.
+
+        Body:
+        {
+          "cliente": 1   # opcional si el usuario ya está vinculado
+        }
+
+        NO marca como pagada, solo asegura que tiene ítems y totales correctos.
+        Luego, el flujo de pago usará `confirmar_pago`.
+        """
+        usuario = request.user
+        cliente = self._resolver_cliente(request)
+
+        venta = (
+            Venta.objects.filter(
+                cliente=cliente,
+                usuario=usuario,
+                estado="pendiente",
+            )
+            .prefetch_related("items__producto")
+            .first()
+        )
+        if not venta or not venta.items.exists():
+            return Response(
+                {"detail": "El carrito está vacío."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        venta.recalc_totales()
+        ser = VentaSerializer(venta, context={"request": request})
+        return Response(ser.data, status=status.HTTP_200_OK)
+
+    # ======================
+    # Carrito MÓVIL (ya lo tenías)
+    # ======================
     @action(detail=False, methods=["post"], url_path="desde-carrito")
     def crear_desde_carrito(self, request):
         """
@@ -89,8 +309,10 @@ class VentaViewSet(viewsets.ModelViewSet):
             if not cliente:
                 return Response(
                     {
-                        "detail": "No se pudo determinar el cliente. "
-                                  "Envíe el ID de cliente o vincule el usuario a un cliente."
+                        "detail": (
+                            "No se pudo determinar el cliente. "
+                            "Envíe el ID de cliente o vincule el usuario a un cliente."
+                        )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -118,8 +340,12 @@ class VentaViewSet(viewsets.ModelViewSet):
                 if not prod_id or cantidad <= 0:
                     continue
 
-                producto = Producto.objects.filter(pk=prod_id, activo=True).first()
+                # Igual que arriba: ya no filtramos por activo en la consulta,
+                # pero sí lo comprobamos.
+                producto = Producto.objects.filter(pk=prod_id).first()
                 if not producto:
+                    continue
+                if not producto.activo:
                     continue
 
                 precio_unit = producto.precio_final  # usa descuento si lo hay
@@ -142,10 +368,10 @@ class VentaViewSet(viewsets.ModelViewSet):
         serializer = VentaSerializer(venta, context={"request": request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    @action(
-        detail=True,
-        methods=["post"],
-    )
+    # ======================
+    # Pago / Anulación / Comprobante
+    # ======================
+    @action(detail=True, methods=["post"])
     def confirmar_pago(self, request, pk=None):
         """
         Marca la venta como pagada y descuenta stock.
@@ -159,10 +385,7 @@ class VentaViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(e)}, status=400)
         return Response({"detail": "Pago confirmado", "estado": venta.estado})
 
-    @action(
-        detail=True,
-        methods=["post"],
-    )
+    @action(detail=True, methods=["post"])
     def anular(self, request, pk=None):
         """
         Anula la venta. Si estaba pagada, reingresa stock.
@@ -180,15 +403,15 @@ class VentaViewSet(viewsets.ModelViewSet):
     def comprobante(self, request, pk=None):
         """Genera y devuelve el comprobante de la venta en formato PDF."""
         venta = self.get_object()
-        if venta.estado != 'pagada':
+        if venta.estado != "pagada":
             return Response(
                 {"detail": "Solo se puede generar comprobante de ventas pagadas."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         buffer = generar_comprobante_pdf(venta)
-        response = HttpResponse(buffer, content_type='application/pdf')
-        response['Content-Disposition'] = (
+        response = HttpResponse(buffer, content_type="application/pdf")
+        response["Content-Disposition"] = (
             f'inline; filename="comprobante_{venta.folio}.pdf"'
         )
         return response

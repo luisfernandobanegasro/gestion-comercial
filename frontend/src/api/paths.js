@@ -18,7 +18,6 @@ export const PATHS = {
   categorias: '/catalogo/categorias/',
   marcas: '/catalogo/marcas/',
 
-  // 👇 IMPORTANTE: objeto con root y con /
   ofertas: {
     root: '/catalogo/ofertas/',
   },
@@ -29,6 +28,11 @@ export const PATHS = {
     root: '/ventas/ventas/',
     confirmar: (id) => `/ventas/ventas/${id}/confirmar_pago/`,
     comprobante: (id) => `/ventas/ventas/${id}/comprobante/`,
+
+    // 🛒 Endpoints de carrito
+    carrito: '/ventas/ventas/carrito/',
+    carritoItem: (itemId) => `/ventas/ventas/carrito/items/${itemId}/`,
+    carritoConfirmar: '/ventas/ventas/carrito/confirmar/',
   },
 
   pagos: {
