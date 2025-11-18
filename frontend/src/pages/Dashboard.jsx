@@ -93,7 +93,6 @@ export default function Dashboard() {
         const res = await api.get('/reportes/dashboard/', { params })
         setData(res.data)
 
-        // checklist del pie con todas las categorías
         const cats = res.data?.ventas_por_categoria || []
         setVisibleCategories(cats.map(c => c.categoria))
       } catch (error) {
@@ -131,7 +130,6 @@ export default function Dashboard() {
   const combinedChartData = useMemo(() => {
     const map = {}
 
-    // histórico
     for (const h of historico) {
       map[h.fecha] = {
         fecha: h.fecha,
@@ -140,7 +138,6 @@ export default function Dashboard() {
       }
     }
 
-    // predicciones (fechas futuras)
     for (const p of predicciones) {
       if (!map[p.fecha]) {
         map[p.fecha] = {
@@ -272,10 +269,22 @@ export default function Dashboard() {
                 />
                 <YAxis />
                 <Tooltip
-                  formatter={(value, name) => {
+                  // etiqueta de la fecha
+                  labelFormatter={(label) =>
+                    new Date(label).toLocaleDateString('es-BO', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric'
+                    })
+                  }
+                  // una fila por serie
+                  formatter={(value, _name, props) => {
+                    if (value == null || value === 0) return null
                     const label =
-                      name === 'historico' ? 'Venta histórica' : 'Predicción'
-                    return [`Bs. ${Number(value || 0).toLocaleString()}`, label]
+                      props.dataKey === 'historico'
+                        ? 'Venta histórica'
+                        : 'Predicción'
+                    return [`Bs. ${Number(value).toLocaleString()}`, label]
                   }}
                 />
                 <Legend />
@@ -283,8 +292,8 @@ export default function Dashboard() {
                 <Bar
                   dataKey="historico"
                   name="Venta histórica"
-                  barSize={combinedChartData.length > 25 ? 18 : 32}
-                  radius={[10, 10, 0, 0]}
+                  barSize={combinedChartData.length > 25 ? 18 : 28}
+                  radius={[4, 4, 0, 0]}   // menos redondeado
                   fill="url(#colorHist)"
                   stroke="rgba(15,23,42,0.4)"
                   strokeWidth={1}
@@ -292,8 +301,8 @@ export default function Dashboard() {
                 <Bar
                   dataKey="prediccion"
                   name="Predicción"
-                  barSize={combinedChartData.length > 25 ? 18 : 32}
-                  radius={[10, 10, 0, 0]}
+                  barSize={combinedChartData.length > 25 ? 18 : 28}
+                  radius={[4, 4, 0, 0]}   // menos redondeado
                   fill="url(#colorPred)"
                   stroke="rgba(15,23,42,0.4)"
                   strokeWidth={1}

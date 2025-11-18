@@ -1,3 +1,4 @@
+# ventas/management/commands/seed_demo.py
 from decimal import Decimal
 import random
 from datetime import timedelta
@@ -17,15 +18,17 @@ User = get_user_model()
 
 class Command(BaseCommand):
     help = (
-        "Crea roles/usuarios/clientes y un set GRANDE de ventas demo "
-        "(último año completo) para pruebas de dashboard/reportes."
+        "Crea roles/usuarios/clientes y un set MUY GRANDE de ventas demo "
+        "(último año completo, todas pagadas) para pruebas de dashboard/reportes."
     )
 
     DEMO_PREFIX = "[DEMO-YEAR]"
 
     @transaction.atomic
     def handle(self, *args, **kwargs):
-        self.stdout.write(self.style.NOTICE("Iniciando seed DEMO masivo..."))
+        self.stdout.write(self.style.NOTICE("Iniciando seed DEMO masivo (último año, todo pagado)..."))
+
+        random.seed(42)  # un poco de reproducibilidad
 
         # ==========================
         # Roles base
@@ -86,8 +89,8 @@ class Command(BaseCommand):
         )
         clientes.append(c1)
 
-        # cliente2...cliente60
-        for i in range(2, 61):
+        # cliente2...cliente80  → más clientes para dispersar mejor
+        for i in range(2, 81):
             username = f"cliente{i}"
             email = f"{username}@demo.com"
 
@@ -130,6 +133,18 @@ class Command(BaseCommand):
             )
             return
 
+        # Para que algunos productos se vendan más que otros,
+        # generamos una lista con repetidos (productos “estrella”).
+        productos_populares = []
+        for p in productos:
+            # peso basado en el stock y en el precio (solo para variar)
+            base_weight = 1
+            if hasattr(p, "stock") and p.stock and p.stock > 50:
+                base_weight += 2
+            if p.precio and p.precio > Decimal("3000"):
+                base_weight += 1
+            productos_populares.extend([p] * base_weight)
+
         # ==========================
         # Limpiar ventas demo anteriores
         # ==========================
@@ -143,35 +158,38 @@ class Command(BaseCommand):
             demo_ventas.delete()
 
         # ==========================
-        # Crear ventas históricas del ÚLTIMO AÑO
+        # Crear ventas históricas del ÚLTIMO AÑO (TODAS PAGADAS)
         # ==========================
         now = timezone.now()
         dias_rango = 365  # 1 año completo
 
-        # pesos para los estados
-        estados = ["pagada", "pendiente", "anulada"]
-        pesos_estados = [0.7, 0.2, 0.1]  # 70% pagadas, 20% pendiente, 10% anulada
-
         total_ventas_creadas = 0
         total_items_creados = 0
 
-        self.stdout.write("⏳ Generando ventas demo del último año...")
+        self.stdout.write("⏳ Generando ventas demo del último año (todas pagadas)...")
 
         # Recorremos día por día desde hoy hacia atrás
         for offset in range(dias_rango):
-            # Fecha del día (con hora aleatoria)
+            # Fecha del día (con hora base al azar)
             base_date = now - timedelta(days=offset)
 
-            # entre 5 y 25 ventas por día
-            num_ventas_dia = random.randint(5, 25)
+            # Más ventas en días laborales, menos en fin de semana
+            weekday = base_date.weekday()  # 0=lunes ... 6=domingo
+            if weekday < 5:
+                # Lunes-viernes: entre 25 y 60 ventas
+                num_ventas_dia = random.randint(25, 60)
+            else:
+                # Sábado-domingo: entre 15 y 40 ventas
+                num_ventas_dia = random.randint(15, 40)
 
             for _ in range(num_ventas_dia):
                 cli = random.choice(clientes)
 
-                estado = random.choices(estados, weights=pesos_estados, k=1)[0]
+                # TODAS las ventas generadas serán pagadas
+                estado = "pagada"
 
-                # Hora aleatoria dentro del día
-                hora = random.randint(8, 21)
+                # Hora aleatoria dentro del día (entre 09:00 y 21:59)
+                hora = random.randint(9, 21)
                 minuto = random.randint(0, 59)
                 segundo = random.randint(0, 59)
                 fecha = base_date.replace(
@@ -181,26 +199,27 @@ class Command(BaseCommand):
                 v = Venta.objects.create(
                     cliente=cli,
                     estado=estado,
-                    observaciones=f"{self.DEMO_PREFIX} Venta auto-generada "
-                    f"para {cli.nombre} ({fecha.date()})",
+                    observaciones=(
+                        f"{self.DEMO_PREFIX} Venta auto-generada "
+                        f"para {cli.nombre} ({fecha.date()})"
+                    ),
                     usuario=empleado,
                     creado_en=fecha,
                     actualizado_en=fecha,
                 )
 
-                # entre 1 y 6 productos distintos por venta
-                num_items = random.randint(1, 6)
-                usados_ids = set()
+                # entre 2 y 8 productos distintos por venta
+                num_items = random.randint(2, 8)
+                usados_ids: set[int] = set()
 
                 for _ in range(num_items):
-                    prod = random.choice(productos)
-                    # evitamos repetir el mismo producto muchas veces en la misma venta
+                    prod = random.choice(productos_populares)
                     if prod.id in usados_ids:
                         continue
                     usados_ids.add(prod.id)
 
-                    # cantidades pequeñas para que parezca más real
-                    cantidad = random.randint(1, 4)
+                    # cantidades entre 1 y 5 para que parezca real
+                    cantidad = random.randint(1, 5)
                     subtotal = prod.precio * Decimal(cantidad)
 
                     ItemVenta.objects.create(
@@ -231,10 +250,11 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             "- Usuarios demo: admin/1234, empleado1/1234, "
-            "cliente1..cliente60 (pass: 1234)"
+            "cliente1..cliente80 (pass: 1234)"
         )
         self.stdout.write(
             self.style.SUCCESS(
-                "Seed masivo listo. El dashboard y los filtros deberían verse MUY poblados."
+                "Seed masivo listo. El historial de ventas y el dashboard "
+                "deberían verse MUY poblados y todas las ventas en estado 'pagada'."
             )
         )
